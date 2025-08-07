@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     curl \
     nmap \
-    netcat \
+    netcat-openbsd \
     iputils-ping \
     dnsutils \
     net-tools \
@@ -48,4 +48,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:5000/health || exit 1
 
 # Default command
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--timeout", "120", "app:app"]
+CMD ["python", "app.py"]

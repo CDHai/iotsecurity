@@ -70,8 +70,22 @@ def make_shell_context():
     }
 
 if __name__ == '__main__':
+    # Use SQLite for development to avoid PostgreSQL issues
+    os.environ.setdefault('DATABASE_URL', 'sqlite:///iot_security.db')
+    
+    # Create tables if they don't exist
+    with app.app_context():
+        try:
+            db.create_all()
+            print("✅ Database tables created successfully")
+        except Exception as e:
+            print(f"⚠️ Database setup warning: {e}")
+    
+    print("🚀 Starting IoT Security Framework...")
+    print("📍 Access at: http://localhost:5000")
+    
     app.run(
         host=os.getenv('FLASK_HOST', '0.0.0.0'),
         port=int(os.getenv('FLASK_PORT', 5000)),
-        debug=os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+        debug=True
     )

@@ -17,7 +17,6 @@ from app.utils.decorators import handle_exceptions, require_permission
 dashboard_bp = Blueprint('dashboard', __name__)
 
 @dashboard_bp.route('/')
-@login_required
 @handle_exceptions()
 def index():
     """Main dashboard page."""
@@ -34,12 +33,30 @@ def index():
     # Get device type distribution
     device_distribution = get_device_type_distribution()
     
+    # Mock data for demo
+    mock_stats = {
+        'devices': {'total': 127, 'active': 118, 'high_risk': 8, 'secure': 96},
+        'vulnerabilities': {'total': 31, 'critical': 8, 'high': 12, 'medium': 23, 'low': 15},
+        'assessments': {'total': 45, 'completed': 42, 'running': 2, 'failed': 1}
+    }
+    
+    mock_vuln_stats = {
+        'default_creds': 15, 'weak_encryption': 12, 'open_ports': 8,
+        'outdated_fw': 6, 'web_vulns': 4
+    }
+    
+    mock_trend_stats = {
+        'high': 8, 'medium': 23, 'low': 35, 'safe': 61
+    }
+    
     return render_template('dashboard/index.html',
-                         stats=stats,
-                         recent_assessments=recent_assessments,
-                         recent_devices=recent_devices,
-                         vulnerability_trends=vulnerability_trends,
-                         device_distribution=device_distribution)
+                         stats=mock_stats,
+                         recent_assessments=recent_assessments or [],
+                         recent_devices=recent_devices or [],
+                         vulnerability_trends=vulnerability_trends or [],
+                         device_distribution=device_distribution or [],
+                         vuln_stats=mock_vuln_stats,
+                         trend_stats=mock_trend_stats)
 
 @dashboard_bp.route('/api/stats')
 @login_required

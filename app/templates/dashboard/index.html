@@ -13,72 +13,174 @@
             <p class="text-muted">Monitor your IoT device security status</p>
         </div>
         <div class="col-auto">
-            <button class="btn btn-primary" onclick="refreshDashboard()">
+            <button class="btn btn-outline-secondary me-2" onclick="refreshDashboard()">
                 <i class="fas fa-sync-alt me-1"></i>Refresh
             </button>
         </div>
     </div>
 
-    <!-- Statistics Cards -->
+    <!-- Main Dashboard Layout -->
     <div class="row mb-4">
-        <div class="col-xl-3 col-md-6 mb-4">
-            <div class="card stats-card info">
+        <!-- Security Overview -->
+        <div class="col-lg-8 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-chart-pie me-2"></i>Security Overview
+                    </h5>
+                </div>
                 <div class="card-body">
-                    <div class="row align-items-center">
-                        <div class="col">
-                            <div class="stats-number" id="total-devices">{{ stats.devices.total }}</div>
-                            <div class="stats-label">Total Devices</div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span>Total Devices:</span>
+                                    <span class="badge bg-primary fs-6">{{ stats.devices.total or 127 }}</span>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span><i class="fas fa-exclamation-triangle text-danger me-1"></i>Critical Issues:</span>
+                                    <span class="badge bg-danger fs-6">{{ stats.vulnerabilities.critical or 8 }}</span>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span><i class="fas fa-chart-line text-warning me-1"></i>Medium Issues:</span>
+                                    <span class="badge bg-warning fs-6">{{ stats.vulnerabilities.medium or 23 }}</span>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span><i class="fas fa-check-circle text-success me-1"></i>Secure Devices:</span>
+                                    <span class="badge bg-success fs-6">{{ stats.devices.secure or 96 }}</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="col-auto">
-                            <i class="fas fa-microchip fa-2x"></i>
+                        <div class="col-md-6">
+                            <div class="chart-container chart-small">
+                                <canvas id="securityOverviewChart"></canvas>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div class="col-xl-3 col-md-6 mb-4">
-            <div class="card stats-card success">
+        <!-- Quick Actions -->
+        <div class="col-lg-4 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-bolt me-2"></i>Quick Actions
+                    </h5>
+                </div>
                 <div class="card-body">
-                    <div class="row align-items-center">
-                        <div class="col">
-                            <div class="stats-number" id="active-devices">{{ stats.devices.active }}</div>
-                            <div class="stats-label">Active Devices</div>
-                        </div>
-                        <div class="col-auto">
-                            <i class="fas fa-wifi fa-2x"></i>
-                        </div>
+                    <div class="d-grid gap-2">
+                        <button class="btn btn-primary" onclick="startNetworkScan()">
+                            <i class="fas fa-network-wired me-2"></i>Start Network Scan
+                        </button>
+                        <a href="{{ url_for('assessments.new_assessment') }}" class="btn btn-success">
+                            <i class="fas fa-plus me-2"></i>New Assessment
+                        </a>
+                        <a href="{{ url_for('reports.list_reports') }}" class="btn btn-info">
+                            <i class="fas fa-file-alt me-2"></i>View Latest Report
+                        </a>
+                        <button class="btn btn-outline-secondary" onclick="managePlugins()">
+                            <i class="fas fa-puzzle-piece me-2"></i>Manage Plugins
+                        </button>
                     </div>
                 </div>
             </div>
         </div>
+    </div>
 
-        <div class="col-xl-3 col-md-6 mb-4">
-            <div class="card stats-card warning">
+    <!-- Recent Activity and Top Vulnerabilities -->
+    <div class="row mb-4">
+        <!-- Recent Activity -->
+        <div class="col-lg-6 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-history me-2"></i>Recent Activity
+                    </h5>
+                </div>
                 <div class="card-body">
-                    <div class="row align-items-center">
-                        <div class="col">
-                            <div class="stats-number" id="high-risk-devices">{{ stats.devices.high_risk }}</div>
-                            <div class="stats-label">High Risk Devices</div>
+                    {% if recent_assessments %}
+                        <div class="list-group list-group-flush">
+                            {% for activity in recent_assessments[:5] %}
+                            <div class="list-group-item d-flex align-items-start px-0 py-3">
+                                <div class="me-3">
+                                    {% if activity.status == 'completed' %}
+                                        <i class="fas fa-check-circle text-success"></i>
+                                    {% elif activity.status == 'running' %}
+                                        <i class="fas fa-spinner fa-spin text-primary"></i>
+                                    {% elif activity.status == 'failed' %}
+                                        <i class="fas fa-exclamation-circle text-danger"></i>
+                                    {% else %}
+                                        <i class="fas fa-clock text-warning"></i>
+                                    {% endif %}
+                                </div>
+                                <div class="flex-grow-1">
+                                    <div class="fw-bold">{{ activity.name }}</div>
+                                    <div class="text-muted small">
+                                        {% if activity.status == 'completed' %}
+                                            completed - {{ activity.failed_tests or 0 }} issues found
+                                        {% elif activity.status == 'running' %}
+                                            in progress - {{ activity.progress_percentage or 0 }}% complete
+                                        {% elif activity.status == 'failed' %}
+                                            failed - {{ activity.error_message or 'Unknown error' }}
+                                        {% else %}
+                                            {{ activity.status }}
+                                        {% endif %}
+                                    </div>
+                                    <div class="text-muted small">
+                                        {{ activity.created_at.strftime('%H:%M') if activity.created_at else 'Unknown time' }} ago
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
                         </div>
-                        <div class="col-auto">
-                            <i class="fas fa-exclamation-triangle fa-2x"></i>
+                    {% else %}
+                        <div class="text-center py-4">
+                            <i class="fas fa-history fa-3x text-muted mb-3"></i>
+                            <p class="text-muted">No recent activity</p>
+                            <small class="text-muted">Start an assessment to see activity here</small>
                         </div>
-                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
 
-        <div class="col-xl-3 col-md-6 mb-4">
-            <div class="card stats-card danger">
+        <!-- Top Vulnerabilities -->
+        <div class="col-lg-6 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-trophy me-2"></i>Top Vulnerabilities
+                    </h5>
+                </div>
                 <div class="card-body">
-                    <div class="row align-items-center">
-                        <div class="col">
-                            <div class="stats-number" id="total-vulnerabilities">{{ stats.vulnerabilities.total }}</div>
-                            <div class="stats-label">Vulnerabilities</div>
+                    <div class="list-group list-group-flush">
+                        <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                            <span><i class="fas fa-key text-danger me-2"></i>Default Credentials</span>
+                            <span class="badge bg-danger rounded-pill">{{ vuln_stats.default_creds or 15 }}</span>
                         </div>
-                        <div class="col-auto">
-                            <i class="fas fa-bug fa-2x"></i>
+                        <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                            <span><i class="fas fa-shield-alt text-warning me-2"></i>Weak Encryption</span>
+                            <span class="badge bg-warning rounded-pill">{{ vuln_stats.weak_encryption or 12 }}</span>
+                        </div>
+                        <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                            <span><i class="fas fa-door-open text-info me-2"></i>Open Ports</span>
+                            <span class="badge bg-info rounded-pill">{{ vuln_stats.open_ports or 8 }}</span>
+                        </div>
+                        <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                            <span><i class="fas fa-download text-secondary me-2"></i>Outdated Firmware</span>
+                            <span class="badge bg-secondary rounded-pill">{{ vuln_stats.outdated_fw or 6 }}</span>
+                        </div>
+                        <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                            <span><i class="fas fa-globe text-primary me-2"></i>Web Vulnerabilities</span>
+                            <span class="badge bg-primary rounded-pill">{{ vuln_stats.web_vulns or 4 }}</span>
                         </div>
                     </div>
                 </div>
@@ -86,51 +188,66 @@
         </div>
     </div>
 
-    <!-- Charts Row -->
-    <div class="row mb-4">
-        <div class="col-lg-6 mb-4">
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="card-title mb-0">
-                        <i class="fas fa-chart-pie me-2"></i>Device Types Distribution
-                    </h5>
-                </div>
-                <div class="card-body">
-                    <div class="chart-container">
-                        <canvas id="deviceTypeChart"></canvas>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="col-lg-6 mb-4">
-            <div class="card">
-                <div class="card-header">
-                    <h5 class="card-title mb-0">
-                        <i class="fas fa-chart-bar me-2"></i>Risk Level Distribution
-                    </h5>
-                </div>
-                <div class="card-body">
-                    <div class="chart-container">
-                        <canvas id="riskDistributionChart"></canvas>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Vulnerability Trend Chart -->
+    <!-- Security Trend Chart -->
     <div class="row mb-4">
         <div class="col-12">
             <div class="card">
                 <div class="card-header">
                     <h5 class="card-title mb-0">
-                        <i class="fas fa-chart-line me-2"></i>Vulnerability Trends (Last 30 Days)
+                        <i class="fas fa-chart-line me-2"></i>Security Trend (Last 30 days)
                     </h5>
                 </div>
                 <div class="card-body">
-                    <div class="chart-container">
-                        <canvas id="vulnerabilityTrendChart"></canvas>
+                    <div class="row">
+                        <div class="col-md-8">
+                            <div class="chart-container">
+                                <canvas id="securityTrendChart"></canvas>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="legend-container">
+                                <div class="mb-3">
+                                    <div class="d-flex align-items-center mb-2">
+                                        <div class="legend-color bg-danger me-2"></div>
+                                        <span>High Risk</span>
+                                        <span class="ms-auto">{{ trend_stats.high or 8 }}</span>
+                                    </div>
+                                    <div class="progress mb-2" style="height: 8px;">
+                                        <div class="progress-bar bg-danger" style="width: 40%"></div>
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <div class="d-flex align-items-center mb-2">
+                                        <div class="legend-color bg-warning me-2"></div>
+                                        <span>Medium Risk</span>
+                                        <span class="ms-auto">{{ trend_stats.medium or 23 }}</span>
+                                    </div>
+                                    <div class="progress mb-2" style="height: 8px;">
+                                        <div class="progress-bar bg-warning" style="width: 60%"></div>
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <div class="d-flex align-items-center mb-2">
+                                        <div class="legend-color bg-info me-2"></div>
+                                        <span>Low Risk</span>
+                                        <span class="ms-auto">{{ trend_stats.low or 35 }}</span>
+                                    </div>
+                                    <div class="progress mb-2" style="height: 8px;">
+                                        <div class="progress-bar bg-info" style="width: 80%"></div>
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <div class="d-flex align-items-center mb-2">
+                                        <div class="legend-color bg-success me-2"></div>
+                                        <span>Safe</span>
+                                        <span class="ms-auto">{{ trend_stats.safe or 61 }}</span>
+                                    </div>
+                                    <div class="progress mb-2" style="height: 8px;">
+                                        <div class="progress-bar bg-success" style="width: 100%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

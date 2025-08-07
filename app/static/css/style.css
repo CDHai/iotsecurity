@@ -411,6 +411,18 @@ body {
     100% { transform: translateX(0); }
 }
 
+/* Legend */
+.legend-container {
+    padding: 1rem;
+}
+
+.legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    display: inline-block;
+}
+
 /* Utility Classes */
 .text-truncate-2 {
     overflow: hidden;
