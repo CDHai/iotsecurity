@@ -1,319 +1,357 @@
-from flask import jsonify, request, current_app
-from flask_login import login_required, current_user
-from app.api import api_bp
-from app.models import Device, DeviceType, DeviceStatus
-from app.core.discovery import NetworkScanner, DeviceClassifier
+"""
+Device management API endpoints
+"""
+
+from flask import Blueprint, request, jsonify, current_app
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from sqlalchemy import desc
+
 from app import db
-from sqlalchemy import or_, and_
-import asyncio
+from app.models.device import Device
+from app.models.user import User
+from app.utils.decorators import (
+    require_api_auth, require_permission, handle_exceptions, 
+    validate_json, rate_limit, log_activity
+)
+from app.utils.validators import validate_device_data
 
-@api_bp.route('/devices', methods=['GET'])
-@login_required
-def get_devices():
-    """Get list of devices with filtering and pagination"""
-    try:
-        # Get query parameters
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 20, type=int)
-        device_type = request.args.get('device_type')
-        manufacturer = request.args.get('manufacturer')
-        status = request.args.get('status')
-        risk_level = request.args.get('risk_level')
-        search = request.args.get('search')
-        
-        # Build query
-        query = Device.query
-        
-        # Apply filters
-        if device_type:
-            query = query.filter(Device.device_type == DeviceType(device_type))
-        
-        if manufacturer:
-            query = query.filter(Device.manufacturer.ilike(f'%{manufacturer}%'))
-        
-        if status:
-            query = query.filter(Device.status == DeviceStatus(status))
-        
-        if risk_level:
-            if risk_level == 'critical':
-                query = query.filter(Device.risk_score >= 8.0)
-            elif risk_level == 'high':
-                query = query.filter(and_(Device.risk_score >= 6.0, Device.risk_score < 8.0))
-            elif risk_level == 'medium':
-                query = query.filter(and_(Device.risk_score >= 4.0, Device.risk_score < 6.0))
-            elif risk_level == 'low':
-                query = query.filter(and_(Device.risk_score >= 2.0, Device.risk_score < 4.0))
-            elif risk_level == 'safe':
-                query = query.filter(Device.risk_score < 2.0)
-        
-        if search:
-            query = query.filter(
-                or_(
-                    Device.ip_address.ilike(f'%{search}%'),
-                    Device.hostname.ilike(f'%{search}%'),
-                    Device.manufacturer.ilike(f'%{search}%'),
-                    Device.model.ilike(f'%{search}%')
-                )
-            )
-        
-        # Order by discovery date (newest first)
-        query = query.order_by(Device.discovered_at.desc())
-        
-        # Paginate
-        pagination = query.paginate(
-            page=page, 
-            per_page=per_page, 
-            error_out=False
-        )
-        
-        devices = pagination.items
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'devices': [device.get_device_info() for device in devices],
-                'pagination': {
-                    'page': page,
-                    'per_page': per_page,
-                    'total': pagination.total,
-                    'pages': pagination.pages,
-                    'has_next': pagination.has_next,
-                    'has_prev': pagination.has_prev
-                }
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Error getting devices: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to load devices'
-        }), 500
+devices_api_bp = Blueprint('devices_api', __name__)
 
-@api_bp.route('/devices/<int:device_id>', methods=['GET'])
-@login_required
+@devices_api_bp.route('/', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def list_devices():
+    """List all devices with pagination and filtering."""
+    # Get query parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+    search = request.args.get('search', '').strip()
+    device_type = request.args.get('type', '')
+    status = request.args.get('status', '')
+    risk_level = request.args.get('risk_level', '')
+    manufacturer = request.args.get('manufacturer', '')
+    
+    # Build query
+    query = Device.query
+    
+    if search:
+        devices = Device.search_devices(search)
+        query = query.filter(Device.id.in_([d.id for d in devices]))
+    
+    if device_type:
+        query = query.filter(Device.device_type == device_type)
+    
+    if status == 'active':
+        query = query.filter(Device.is_active == True)
+    elif status == 'inactive':
+        query = query.filter(Device.is_active == False)
+    
+    if risk_level:
+        query = query.filter(Device.risk_level == risk_level)
+    
+    if manufacturer:
+        query = query.filter(Device.manufacturer.ilike(f'%{manufacturer}%'))
+    
+    # Paginate results
+    pagination = query.order_by(desc(Device.last_seen)).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    
+    devices = [device.to_dict() for device in pagination.items]
+    
+    return jsonify({
+        'devices': devices,
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': pagination.total,
+            'pages': pagination.pages,
+            'has_next': pagination.has_next,
+            'has_prev': pagination.has_prev
+        }
+    }), 200
+
+@devices_api_bp.route('/<int:device_id>', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
 def get_device(device_id):
-    """Get specific device details"""
+    """Get device details."""
+    device = Device.query.get(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    
+    include_assessments = request.args.get('include_assessments', 'false').lower() == 'true'
+    
+    return jsonify({
+        'device': device.to_dict(include_relationships=include_assessments)
+    }), 200
+
+@devices_api_bp.route('/', methods=['POST'])
+@require_api_auth
+@require_permission('write')
+@validate_json()
+@rate_limit(max_requests=10, window_seconds=60)
+@handle_exceptions()
+@log_activity('create_device', 'device')
+def create_device():
+    """Create a new device."""
+    data = request.get_json()
+    
     try:
-        device = Device.query.get_or_404(device_id)
+        # Validate device data
+        validated_data = validate_device_data(data)
         
-        # Get recent assessments for this device
-        recent_assessments = device.assessments.order_by(
-            Assessment.created_at.desc()
-        ).limit(5).all()
+        # Check if device with same IP already exists
+        existing_device = Device.find_by_ip(validated_data['ip_address'])
+        if existing_device:
+            return jsonify({'error': 'Device with this IP address already exists'}), 409
         
-        device_info = device.get_device_info()
-        device_info['recent_assessments'] = [
-            assessment.get_assessment_info() 
-            for assessment in recent_assessments
+        # Create device
+        device = Device(**validated_data)
+        db.session.add(device)
+        db.session.commit()
+        
+        current_app.logger.info(f"Device {device.ip_address} created by user {get_jwt_identity()}")
+        
+        return jsonify({
+            'message': 'Device created successfully',
+            'device': device.to_dict()
+        }), 201
+        
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Device creation error: {str(e)}")
+        return jsonify({'error': 'Failed to create device'}), 500
+
+@devices_api_bp.route('/<int:device_id>', methods=['PUT'])
+@require_api_auth
+@require_permission('write')
+@validate_json()
+@handle_exceptions()
+@log_activity('update_device', 'device')
+def update_device(device_id):
+    """Update device information."""
+    device = Device.query.get(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    
+    data = request.get_json()
+    
+    try:
+        # Update allowed fields
+        allowed_fields = [
+            'hostname', 'manufacturer', 'device_type', 'model', 
+            'firmware_version', 'notes', 'is_verified'
         ]
         
-        return jsonify({
-            'success': True,
-            'data': device_info
-        })
+        for field in allowed_fields:
+            if field in data:
+                setattr(device, field, data[field])
         
-    except Exception as e:
-        current_app.logger.error(f"Error getting device {device_id}: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to load device details'
-        }), 500
-
-@api_bp.route('/devices/scan', methods=['POST'])
-@login_required
-def scan_network():
-    """Start network scan for IoT devices"""
-    try:
-        data = request.get_json()
-        network_range = data.get('network_range')
+        # Handle special fields
+        if 'open_ports' in data:
+            device.open_ports_list = data['open_ports']
         
-        if not network_range:
-            return jsonify({
-                'success': False,
-                'error': 'Network range is required'
-            }), 400
+        if 'protocols' in data:
+            device.protocols_list = data['protocols']
         
-        # Validate network range format
-        if not is_valid_network_range(network_range):
-            return jsonify({
-                'success': False,
-                'error': 'Invalid network range format'
-            }), 400
+        if 'services' in data:
+            device.services_dict = data['services']
         
-        # Start network scan
-        scanner = NetworkScanner()
-        classifier = DeviceClassifier()
-        
-        # Run scan asynchronously
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            devices = loop.run_until_complete(scanner.scan_network_async(network_range))
-        finally:
-            loop.close()
-        
-        # Classify and save devices
-        discovered_devices = []
-        for device in devices:
-            # Classify device
-            classification = classifier.classify_device(device)
-            classifier.update_device_classification(device, classification)
-            
-            # Save to database
-            db.session.add(device)
-            discovered_devices.append(device)
+        if 'tags' in data:
+            device.tags_list = data['tags']
         
         db.session.commit()
         
+        current_app.logger.info(f"Device {device.ip_address} updated by user {get_jwt_identity()}")
+        
         return jsonify({
-            'success': True,
-            'data': {
-                'message': f'Scan completed. Found {len(discovered_devices)} devices.',
-                'devices': [device.get_device_info() for device in discovered_devices]
-            }
-        })
+            'message': 'Device updated successfully',
+            'device': device.to_dict()
+        }), 200
         
     except Exception as e:
-        current_app.logger.error(f"Error scanning network: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to scan network'
-        }), 500
+        db.session.rollback()
+        current_app.logger.error(f"Device update error: {str(e)}")
+        return jsonify({'error': 'Failed to update device'}), 500
 
-@api_bp.route('/devices/<int:device_id>', methods=['PUT'])
-@login_required
-def update_device(device_id):
-    """Update device information"""
-    try:
-        device = Device.query.get_or_404(device_id)
-        data = request.get_json()
-        
-        # Update allowed fields
-        if 'hostname' in data:
-            device.hostname = data['hostname']
-        
-        if 'manufacturer' in data:
-            device.manufacturer = data['manufacturer']
-        
-        if 'model' in data:
-            device.model = data['model']
-        
-        if 'firmware_version' in data:
-            device.firmware_version = data['firmware_version']
-        
-        if 'device_type' in data:
-            device.device_type = DeviceType(data['device_type'])
-        
-        if 'notes' in data:
-            device.notes = data['notes']
-        
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'data': device.get_device_info()
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Error updating device {device_id}: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to update device'
-        }), 500
-
-@api_bp.route('/devices/<int:device_id>', methods=['DELETE'])
-@login_required
+@devices_api_bp.route('/<int:device_id>', methods=['DELETE'])
+@require_api_auth
+@require_permission('delete')
+@handle_exceptions()
+@log_activity('delete_device', 'device')
 def delete_device(device_id):
-    """Delete device"""
+    """Delete a device."""
+    device = Device.query.get(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    
     try:
-        device = Device.query.get_or_404(device_id)
-        
-        # Delete related assessments and test results
-        for assessment in device.assessments:
-            for test_result in assessment.test_results:
-                db.session.delete(test_result)
-            db.session.delete(assessment)
-        
+        device_ip = device.ip_address
         db.session.delete(device)
         db.session.commit()
         
-        return jsonify({
-            'success': True,
-            'message': 'Device deleted successfully'
-        })
+        current_app.logger.info(f"Device {device_ip} deleted by user {get_jwt_identity()}")
+        
+        return jsonify({'message': 'Device deleted successfully'}), 200
         
     except Exception as e:
-        current_app.logger.error(f"Error deleting device {device_id}: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to delete device'
-        }), 500
+        db.session.rollback()
+        current_app.logger.error(f"Device deletion error: {str(e)}")
+        return jsonify({'error': 'Failed to delete device'}), 500
 
-@api_bp.route('/devices/bulk-delete', methods=['POST'])
-@login_required
-def bulk_delete_devices():
-    """Delete multiple devices"""
+@devices_api_bp.route('/<int:device_id>/tags', methods=['POST'])
+@require_api_auth
+@require_permission('write')
+@validate_json()
+@handle_exceptions()
+def add_device_tag(device_id):
+    """Add a tag to device."""
+    device = Device.query.get(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    
+    data = request.get_json()
+    tag = data.get('tag', '').strip()
+    
+    if not tag:
+        return jsonify({'error': 'Tag is required'}), 400
+    
     try:
-        data = request.get_json()
-        device_ids = data.get('device_ids', [])
-        
-        if not device_ids:
-            return jsonify({
-                'success': False,
-                'error': 'No device IDs provided'
-            }), 400
-        
-        deleted_count = 0
-        for device_id in device_ids:
-            device = Device.query.get(device_id)
-            if device:
-                # Delete related assessments and test results
-                for assessment in device.assessments:
-                    for test_result in assessment.test_results:
-                        db.session.delete(test_result)
-                    db.session.delete(assessment)
-                
-                db.session.delete(device)
-                deleted_count += 1
-        
-        db.session.commit()
-        
+        device.add_tag(tag)
         return jsonify({
-            'success': True,
-            'message': f'Deleted {deleted_count} devices successfully'
-        })
-        
+            'message': 'Tag added successfully',
+            'tags': device.tags_list
+        }), 200
     except Exception as e:
-        current_app.logger.error(f"Error bulk deleting devices: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to delete devices'
-        }), 500
+        return jsonify({'error': str(e)}), 500
 
-def is_valid_network_range(network_range):
-    """Validate network range format"""
+@devices_api_bp.route('/<int:device_id>/tags/<tag>', methods=['DELETE'])
+@require_api_auth
+@require_permission('write')
+@handle_exceptions()
+def remove_device_tag(device_id, tag):
+    """Remove a tag from device."""
+    device = Device.query.get(device_id)
+    if not device:
+        return jsonify({'error': 'Device not found'}), 404
+    
     try:
-        # Basic validation for CIDR notation
-        if '/' not in network_range:
-            return False
-        
-        ip_part, cidr_part = network_range.split('/')
-        cidr = int(cidr_part)
-        
-        if cidr < 0 or cidr > 32:
-            return False
-        
-        # Validate IP address format
-        parts = ip_part.split('.')
-        if len(parts) != 4:
-            return False
-        
-        for part in parts:
-            if not part.isdigit() or int(part) < 0 or int(part) > 255:
-                return False
-        
-        return True
-    except:
-        return False
+        device.remove_tag(tag)
+        return jsonify({
+            'message': 'Tag removed successfully',
+            'tags': device.tags_list
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@devices_api_bp.route('/stats', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def device_stats():
+    """Get device statistics."""
+    stats = {
+        'total_devices': Device.query.count(),
+        'active_devices': Device.query.filter_by(is_active=True).count(),
+        'by_type': {},
+        'by_risk_level': {},
+        'by_manufacturer': {}
+    }
+    
+    # Device type distribution
+    type_stats = db.session.query(
+        Device.device_type,
+        db.func.count(Device.id)
+    ).filter(Device.device_type.isnot(None)).group_by(Device.device_type).all()
+    
+    for device_type, count in type_stats:
+        stats['by_type'][device_type] = count
+    
+    # Risk level distribution
+    risk_stats = db.session.query(
+        Device.risk_level,
+        db.func.count(Device.id)
+    ).group_by(Device.risk_level).all()
+    
+    for risk_level, count in risk_stats:
+        stats['by_risk_level'][risk_level] = count
+    
+    # Top manufacturers
+    manufacturer_stats = db.session.query(
+        Device.manufacturer,
+        db.func.count(Device.id)
+    ).filter(Device.manufacturer.isnot(None)).group_by(Device.manufacturer).limit(10).all()
+    
+    for manufacturer, count in manufacturer_stats:
+        stats['by_manufacturer'][manufacturer] = count
+    
+    return jsonify(stats), 200
+
+@devices_api_bp.route('/search', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def search_devices():
+    """Search devices by various criteria."""
+    query = request.args.get('q', '').strip()
+    limit = min(request.args.get('limit', 10, type=int), 50)
+    
+    if not query:
+        return jsonify({'error': 'Search query is required'}), 400
+    
+    devices = Device.search_devices(query)[:limit]
+    
+    return jsonify({
+        'devices': [device.to_dict() for device in devices],
+        'total': len(devices)
+    }), 200
+
+@devices_api_bp.route('/types', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def get_device_types():
+    """Get list of available device types."""
+    types = db.session.query(Device.device_type).filter(
+        Device.device_type.isnot(None)
+    ).distinct().all()
+    
+    device_types = [t[0] for t in types if t[0]]
+    
+    return jsonify({'device_types': sorted(device_types)}), 200
+
+@devices_api_bp.route('/manufacturers', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def get_manufacturers():
+    """Get list of available manufacturers."""
+    manufacturers = db.session.query(Device.manufacturer).filter(
+        Device.manufacturer.isnot(None)
+    ).distinct().all()
+    
+    manufacturer_list = [m[0] for m in manufacturers if m[0]]
+    
+    return jsonify({'manufacturers': sorted(manufacturer_list)}), 200
+
+# Error handlers
+@devices_api_bp.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors."""
+    return jsonify({'error': 'Resource not found'}), 404
+
+@devices_api_bp.errorhandler(403)
+def forbidden(error):
+    """Handle 403 errors."""
+    return jsonify({'error': 'Access forbidden'}), 403
+
+@devices_api_bp.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors."""
+    db.session.rollback()
+    return jsonify({'error': 'Internal server error'}), 500

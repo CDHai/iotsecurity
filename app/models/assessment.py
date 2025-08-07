@@ -1,300 +1,304 @@
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+"""
+Assessment model for security assessment management
+"""
+
 import json
-import enum
-
-db = SQLAlchemy()
-
-class AssessmentStatus(enum.Enum):
-    """Assessment status enumeration"""
-    PENDING = 'pending'
-    RUNNING = 'running'
-    COMPLETED = 'completed'
-    FAILED = 'failed'
-    CANCELLED = 'cancelled'
-
-class TestStatus(enum.Enum):
-    """Test result status enumeration"""
-    PASS = 'pass'
-    FAIL = 'fail'
-    ERROR = 'error'
-    SKIP = 'skip'
-    TIMEOUT = 'timeout'
-
-class TestType(enum.Enum):
-    """Test type enumeration"""
-    CREDENTIAL = 'credential'
-    PROTOCOL = 'protocol'
-    WEB = 'web'
-    NETWORK = 'network'
-    FIRMWARE = 'firmware'
-    CUSTOM = 'custom'
+from datetime import datetime
+from app import db
 
 class Assessment(db.Model):
-    """Security assessment model"""
+    """Model representing a security assessment of an IoT device."""
+    
     __tablename__ = 'assessments'
     
+    # Primary key
     id = db.Column(db.Integer, primary_key=True)
+    
+    # Foreign keys
     device_id = db.Column(db.Integer, db.ForeignKey('devices.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    test_suite_id = db.Column(db.Integer, db.ForeignKey('test_suites.suite_id'), nullable=True)
+    test_suite_id = db.Column(db.Integer, db.ForeignKey('test_suites.id'), nullable=True)
     
-    # Assessment details
-    name = db.Column(db.String(200), nullable=True)
+    # Assessment metadata
+    name = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text, nullable=True)
-    status = db.Column(db.Enum(AssessmentStatus), default=AssessmentStatus.PENDING, nullable=False)
     
-    # Timestamps
-    started_at = db.Column(db.DateTime, nullable=True)
-    completed_at = db.Column(db.DateTime, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    # Assessment status and progress
+    status = db.Column(db.Enum('pending', 'running', 'completed', 'failed', 'cancelled',
+                              name='assessment_status'), default='pending', nullable=False)
+    progress_percentage = db.Column(db.Integer, default=0)
     
-    # Results
-    risk_score = db.Column(db.Float, default=0.0)
+    # Assessment configuration
+    scan_type = db.Column(db.Enum('quick', 'standard', 'comprehensive', 'custom',
+                                 name='scan_types'), default='standard')
+    target_protocols = db.Column(db.Text, nullable=True)  # JSON array
+    custom_tests = db.Column(db.Text, nullable=True)      # JSON array of test IDs
+    
+    # Results and scoring
     total_tests = db.Column(db.Integer, default=0)
     passed_tests = db.Column(db.Integer, default=0)
     failed_tests = db.Column(db.Integer, default=0)
     error_tests = db.Column(db.Integer, default=0)
+    skipped_tests = db.Column(db.Integer, default=0)
     
-    # Summary
-    summary = db.Column(db.Text, nullable=True)
-    findings = db.Column(db.Text, nullable=True)  # JSON object
+    risk_score = db.Column(db.Float, default=0.0)
+    security_grade = db.Column(db.Enum('A', 'B', 'C', 'D', 'F', name='security_grades'),
+                              nullable=True)
+    
+    # Vulnerability summary
+    critical_vulns = db.Column(db.Integer, default=0)
+    high_vulns = db.Column(db.Integer, default=0)
+    medium_vulns = db.Column(db.Integer, default=0)
+    low_vulns = db.Column(db.Integer, default=0)
+    info_vulns = db.Column(db.Integer, default=0)
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    started_at = db.Column(db.DateTime, nullable=True)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Additional data
+    scan_options = db.Column(db.Text, nullable=True)  # JSON object
+    error_message = db.Column(db.Text, nullable=True)
+    notes = db.Column(db.Text, nullable=True)
     
     # Relationships
-    test_results = db.relationship('TestResult', backref='assessment', lazy='dynamic', cascade='all, delete-orphan')
+    test_results = db.relationship('TestResult', backref='assessment', lazy='dynamic',
+                                  cascade='all, delete-orphan')
     
-    def __init__(self, device_id, user_id, test_suite_id=None, name=None, description=None):
+    def __init__(self, device_id, user_id, name, **kwargs):
+        """Initialize assessment."""
         self.device_id = device_id
         self.user_id = user_id
-        self.test_suite_id = test_suite_id
         self.name = name
-        self.description = description
+        
+        # Set additional fields
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
     
-    def start_assessment(self):
-        """Start the assessment"""
-        self.status = AssessmentStatus.RUNNING
-        self.started_at = datetime.utcnow()
-        db.session.commit()
+    @property
+    def target_protocols_list(self):
+        """Get target protocols as Python list."""
+        if self.target_protocols:
+            try:
+                return json.loads(self.target_protocols)
+            except (json.JSONDecodeError, TypeError):
+                return []
+        return []
     
-    def complete_assessment(self, risk_score=None, summary=None):
-        """Complete the assessment"""
-        self.status = AssessmentStatus.COMPLETED
-        self.completed_at = datetime.utcnow()
-        if risk_score is not None:
-            self.risk_score = risk_score
-        if summary:
-            self.summary = summary
-        db.session.commit()
+    @target_protocols_list.setter
+    def target_protocols_list(self, protocols):
+        """Set target protocols from Python list."""
+        if isinstance(protocols, list):
+            self.target_protocols = json.dumps(protocols)
+        else:
+            self.target_protocols = None
     
-    def fail_assessment(self, error_message=None):
-        """Mark assessment as failed"""
-        self.status = AssessmentStatus.FAILED
-        self.completed_at = datetime.utcnow()
-        if error_message:
-            self.summary = f"Assessment failed: {error_message}"
-        db.session.commit()
+    @property
+    def custom_tests_list(self):
+        """Get custom tests as Python list."""
+        if self.custom_tests:
+            try:
+                return json.loads(self.custom_tests)
+            except (json.JSONDecodeError, TypeError):
+                return []
+        return []
     
-    def update_test_counts(self):
-        """Update test result counts"""
-        results = self.test_results.all()
-        self.total_tests = len(results)
-        self.passed_tests = len([r for r in results if r.status == TestStatus.PASS])
-        self.failed_tests = len([r for r in results if r.status == TestStatus.FAIL])
-        self.error_tests = len([r for r in results if r.status == TestStatus.ERROR])
-        db.session.commit()
+    @custom_tests_list.setter
+    def custom_tests_list(self, tests):
+        """Set custom tests from Python list."""
+        if isinstance(tests, list):
+            self.custom_tests = json.dumps(tests)
+        else:
+            self.custom_tests = None
     
-    def get_findings_dict(self):
-        """Get findings as dictionary"""
-        if self.findings:
-            return json.loads(self.findings)
+    @property
+    def scan_options_dict(self):
+        """Get scan options as Python dictionary."""
+        if self.scan_options:
+            try:
+                return json.loads(self.scan_options)
+            except (json.JSONDecodeError, TypeError):
+                return {}
         return {}
     
-    def set_findings_dict(self, findings):
-        """Set findings from dictionary"""
-        self.findings = json.dumps(findings) if findings else None
+    @scan_options_dict.setter
+    def scan_options_dict(self, options):
+        """Set scan options from Python dictionary."""
+        if isinstance(options, dict):
+            self.scan_options = json.dumps(options)
+        else:
+            self.scan_options = None
     
-    def get_assessment_info(self):
-        """Get comprehensive assessment information"""
-        return {
+    @property
+    def duration(self):
+        """Calculate assessment duration."""
+        if self.started_at and self.completed_at:
+            return self.completed_at - self.started_at
+        elif self.started_at:
+            return datetime.utcnow() - self.started_at
+        return None
+    
+    @property
+    def total_vulnerabilities(self):
+        """Get total number of vulnerabilities found."""
+        return (self.critical_vulns + self.high_vulns + self.medium_vulns + 
+                self.low_vulns + self.info_vulns)
+    
+    def start_assessment(self):
+        """Mark assessment as started."""
+        self.status = 'running'
+        self.started_at = datetime.utcnow()
+        self.progress_percentage = 0
+        db.session.commit()
+    
+    def complete_assessment(self, success=True):
+        """Mark assessment as completed."""
+        if success:
+            self.status = 'completed'
+        else:
+            self.status = 'failed'
+        
+        self.completed_at = datetime.utcnow()
+        self.progress_percentage = 100
+        
+        # Update device's last assessment
+        if self.device:
+            self.device.last_assessment = self.completed_at
+            self.device.vulnerability_count = self.total_vulnerabilities
+            self.device.update_risk_level()
+        
+        db.session.commit()
+    
+    def update_progress(self, percentage):
+        """Update assessment progress."""
+        self.progress_percentage = min(100, max(0, percentage))
+        db.session.commit()
+    
+    def calculate_risk_score(self):
+        """Calculate risk score based on vulnerabilities found."""
+        # Weighted scoring system
+        weights = {
+            'critical': 10.0,
+            'high': 7.5,
+            'medium': 5.0,
+            'low': 2.5,
+            'info': 1.0
+        }
+        
+        total_score = (
+            self.critical_vulns * weights['critical'] +
+            self.high_vulns * weights['high'] +
+            self.medium_vulns * weights['medium'] +
+            self.low_vulns * weights['low'] +
+            self.info_vulns * weights['info']
+        )
+        
+        # Normalize to 0-100 scale (assuming max 20 critical vulns as 100)
+        max_possible_score = 20 * weights['critical']
+        self.risk_score = min(100.0, (total_score / max_possible_score) * 100)
+        
+        # Assign security grade
+        if self.risk_score >= 80:
+            self.security_grade = 'F'
+        elif self.risk_score >= 60:
+            self.security_grade = 'D'
+        elif self.risk_score >= 40:
+            self.security_grade = 'C'
+        elif self.risk_score >= 20:
+            self.security_grade = 'B'
+        else:
+            self.security_grade = 'A'
+        
+        db.session.commit()
+    
+    def add_test_result(self, test_result):
+        """Add a test result and update counters."""
+        if test_result.status == 'pass':
+            self.passed_tests += 1
+        elif test_result.status == 'fail':
+            self.failed_tests += 1
+            # Update vulnerability counters if vulnerability found
+            if test_result.vulnerability:
+                severity = test_result.vulnerability.severity
+                if severity == 'critical':
+                    self.critical_vulns += 1
+                elif severity == 'high':
+                    self.high_vulns += 1
+                elif severity == 'medium':
+                    self.medium_vulns += 1
+                elif severity == 'low':
+                    self.low_vulns += 1
+                elif severity == 'info':
+                    self.info_vulns += 1
+        elif test_result.status == 'error':
+            self.error_tests += 1
+        elif test_result.status == 'skip':
+            self.skipped_tests += 1
+        
+        self.total_tests += 1
+        self.calculate_risk_score()
+    
+    def to_dict(self, include_results=False):
+        """Convert assessment to dictionary representation."""
+        data = {
             'id': self.id,
             'device_id': self.device_id,
             'user_id': self.user_id,
             'test_suite_id': self.test_suite_id,
             'name': self.name,
             'description': self.description,
-            'status': self.status.value if self.status else None,
-            'risk_score': self.risk_score,
+            'status': self.status,
+            'progress_percentage': self.progress_percentage,
+            'scan_type': self.scan_type,
+            'target_protocols': self.target_protocols_list,
             'total_tests': self.total_tests,
             'passed_tests': self.passed_tests,
             'failed_tests': self.failed_tests,
             'error_tests': self.error_tests,
+            'skipped_tests': self.skipped_tests,
+            'risk_score': self.risk_score,
+            'security_grade': self.security_grade,
+            'critical_vulns': self.critical_vulns,
+            'high_vulns': self.high_vulns,
+            'medium_vulns': self.medium_vulns,
+            'low_vulns': self.low_vulns,
+            'info_vulns': self.info_vulns,
+            'total_vulnerabilities': self.total_vulnerabilities,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
             'started_at': self.started_at.isoformat() if self.started_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'summary': self.summary,
-            'findings': self.get_findings_dict()
+            'duration': str(self.duration) if self.duration else None,
+            'error_message': self.error_message,
+            'notes': self.notes
         }
+        
+        if include_results:
+            data['test_results'] = [result.to_dict() for result in self.test_results]
+        
+        return data
+    
+    @classmethod
+    def get_recent_assessments(cls, limit=10):
+        """Get recent assessments."""
+        return cls.query.order_by(cls.created_at.desc()).limit(limit).all()
+    
+    @classmethod
+    def get_assessments_by_device(cls, device_id):
+        """Get assessments for a specific device."""
+        return cls.query.filter_by(device_id=device_id).order_by(cls.created_at.desc()).all()
+    
+    @classmethod
+    def get_assessments_by_user(cls, user_id):
+        """Get assessments by a specific user."""
+        return cls.query.filter_by(user_id=user_id).order_by(cls.created_at.desc()).all()
+    
+    @classmethod
+    def get_running_assessments(cls):
+        """Get currently running assessments."""
+        return cls.query.filter_by(status='running').all()
     
     def __repr__(self):
-        return f'<Assessment {self.id} ({self.status.value})>'
-
-class TestSuite(db.Model):
-    """Test suite model"""
-    __tablename__ = 'test_suites'
-    
-    suite_id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False, unique=True)
-    description = db.Column(db.Text, nullable=True)
-    device_types = db.Column(db.Text, nullable=True)  # JSON array
-    created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    is_active = db.Column(db.Boolean, default=True, nullable=False)
-    
-    # Relationships
-    tests = db.relationship('SecurityTest', backref='test_suite', lazy='dynamic')
-    assessments = db.relationship('Assessment', backref='test_suite', lazy='dynamic')
-    
-    def __init__(self, name, description=None, device_types=None, created_by=None):
-        self.name = name
-        self.description = description
-        self.created_by = created_by
-        if device_types:
-            self.device_types_list = device_types
-    
-    @property
-    def device_types_list(self):
-        """Get device types as list"""
-        if self.device_types:
-            return json.loads(self.device_types)
-        return []
-    
-    @device_types_list.setter
-    def device_types_list(self, device_types):
-        """Set device types from list"""
-        self.device_types = json.dumps(device_types) if device_types else None
-    
-    def is_applicable_to_device(self, device_type):
-        """Check if test suite is applicable to device type"""
-        return device_type in self.device_types_list
-    
-    def get_test_suite_info(self):
-        """Get test suite information"""
-        return {
-            'suite_id': self.suite_id,
-            'name': self.name,
-            'description': self.description,
-            'device_types': self.device_types_list,
-            'created_by': self.created_by,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'is_active': self.is_active,
-            'test_count': self.tests.count()
-        }
-    
-    def __repr__(self):
-        return f'<TestSuite {self.name}>'
-
-class SecurityTest(db.Model):
-    """Security test model"""
-    __tablename__ = 'security_tests'
-    
-    test_id = db.Column(db.Integer, primary_key=True)
-    suite_id = db.Column(db.Integer, db.ForeignKey('test_suites.suite_id'), nullable=False)
-    name = db.Column(db.String(150), nullable=False)
-    description = db.Column(db.Text, nullable=True)
-    test_type = db.Column(db.Enum(TestType), nullable=False)
-    
-    # Test configuration
-    payload = db.Column(db.Text, nullable=True)
-    expected_result = db.Column(db.Text, nullable=True)
-    severity = db.Column(db.String(20), default='medium', nullable=False)
-    remediation = db.Column(db.Text, nullable=True)
-    
-    # Test metadata
-    is_active = db.Column(db.Boolean, default=True, nullable=False)
-    timeout = db.Column(db.Integer, default=30)  # seconds
-    retry_count = db.Column(db.Integer, default=1)
-    
-    # Relationships
-    test_results = db.relationship('TestResult', backref='security_test', lazy='dynamic')
-    
-    def __init__(self, suite_id, name, test_type, description=None, payload=None, severity='medium'):
-        self.suite_id = suite_id
-        self.name = name
-        self.test_type = test_type
-        self.description = description
-        self.payload = payload
-        self.severity = severity
-    
-    def get_test_info(self):
-        """Get test information"""
-        return {
-            'test_id': self.test_id,
-            'suite_id': self.suite_id,
-            'name': self.name,
-            'description': self.description,
-            'test_type': self.test_type.value if self.test_type else None,
-            'payload': self.payload,
-            'expected_result': self.expected_result,
-            'severity': self.severity,
-            'remediation': self.remediation,
-            'timeout': self.timeout,
-            'retry_count': self.retry_count,
-            'is_active': self.is_active
-        }
-    
-    def __repr__(self):
-        return f'<SecurityTest {self.name} ({self.test_type.value})>'
-
-class TestResult(db.Model):
-    """Test result model"""
-    __tablename__ = 'test_results'
-    
-    result_id = db.Column(db.Integer, primary_key=True)
-    assessment_id = db.Column(db.Integer, db.ForeignKey('assessments.id'), nullable=False)
-    test_id = db.Column(db.Integer, db.ForeignKey('security_tests.test_id'), nullable=False)
-    vulnerability_id = db.Column(db.Integer, db.ForeignKey('vulnerabilities.vuln_id'), nullable=True)
-    
-    # Test execution
-    status = db.Column(db.Enum(TestStatus), nullable=False)
-    severity = db.Column(db.String(20), nullable=True)
-    evidence = db.Column(db.Text, nullable=True)  # JSON object
-    remediation = db.Column(db.Text, nullable=True)
-    
-    # Execution metadata
-    executed_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    execution_time = db.Column(db.Integer, nullable=True)  # milliseconds
-    error_message = db.Column(db.Text, nullable=True)
-    
-    def __init__(self, assessment_id, test_id, status=TestStatus.PENDING):
-        self.assessment_id = assessment_id
-        self.test_id = test_id
-        self.status = status
-    
-    def get_evidence_dict(self):
-        """Get evidence as dictionary"""
-        if self.evidence:
-            return json.loads(self.evidence)
-        return {}
-    
-    def set_evidence_dict(self, evidence):
-        """Set evidence from dictionary"""
-        self.evidence = json.dumps(evidence) if evidence else None
-    
-    def get_test_result_info(self):
-        """Get test result information"""
-        return {
-            'result_id': self.result_id,
-            'assessment_id': self.assessment_id,
-            'test_id': self.test_id,
-            'vulnerability_id': self.vulnerability_id,
-            'status': self.status.value if self.status else None,
-            'severity': self.severity,
-            'evidence': self.get_evidence_dict(),
-            'remediation': self.remediation,
-            'executed_at': self.executed_at.isoformat() if self.executed_at else None,
-            'execution_time': self.execution_time,
-            'error_message': self.error_message
-        }
-    
-    def __repr__(self):
-        return f'<TestResult {self.result_id} ({self.status.value})>'
+        return f'<Assessment {self.name} ({self.status})>'

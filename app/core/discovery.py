@@ -1,386 +1,324 @@
-import nmap
-import asyncio
-import aiohttp
-import json
-import time
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Optional
-from app.models.device import Device, DeviceType, DeviceStatus
-from app import db
+"""
+Device discovery service integrating network scanning with database
+"""
 
-class NetworkScanner:
-    """Network discovery and device detection"""
+import asyncio
+import logging
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
+
+from app import db
+from app.models.device import Device
+from app.core.network_scanner import NetworkScanner, DeviceFingerprinter, AsyncNetworkScanner
+from app.utils.helpers import merge_scan_results, generate_device_fingerprint
+
+logger = logging.getLogger(__name__)
+
+class DeviceDiscoveryService:
+    """Service for discovering and managing IoT devices."""
     
     def __init__(self):
-        self.nmap = nmap.PortScanner()
-        self.common_iot_ports = [
-            21, 22, 23, 53, 80, 135, 139, 443, 445, 993, 995,
-            1883, 5683, 8080, 8443, 9999, 37777, 554, 8000, 10001
-        ]
-    
-    def scan_network(self, network_range: str, scan_options: Dict = None) -> List[Device]:
+        self.scanner = NetworkScanner()
+        self.async_scanner = AsyncNetworkScanner()
+        self.fingerprinter = DeviceFingerprinter()
+        
+    def discover_devices(self, network_range: str, scan_type: str = 'tcp_connect', 
+                        save_to_db: bool = True) -> List[Dict[str, Any]]:
         """
-        Scan network for IoT devices
+        Discover devices on network and optionally save to database.
         
         Args:
-            network_range: CIDR notation (e.g., "192.168.1.0/24")
-            scan_options: Additional scan options
+            network_range: CIDR notation (e.g., '192.168.1.0/24')
+            scan_type: Type of scan to perform
+            save_to_db: Whether to save results to database
             
         Returns:
             List of discovered devices
         """
-        print(f"Starting network scan for {network_range}")
+        logger.info(f"Starting device discovery for {network_range}")
         
-        # Phase 1: Quick host discovery
-        alive_hosts = self._discover_hosts(network_range)
-        print(f"Discovered {len(alive_hosts)} active hosts")
-        
-        # Phase 2: Port scanning and service enumeration
-        devices = []
-        for host_ip in alive_hosts:
-            device = self._scan_device(host_ip)
-            if device:
-                devices.append(device)
-        
-        print(f"Completed scan. Found {len(devices)} IoT devices")
-        return devices
-    
-    def _discover_hosts(self, network_range: str) -> List[str]:
-        """Discover active hosts in network range"""
         try:
-            # Quick ping sweep
-            scan_result = self.nmap.scan(
-                hosts=network_range,
-                arguments='-sn -n --max-retries 2 --min-rate 100'
-            )
+            # Perform network scan
+            discovered_devices = self.scanner.scan_network(network_range, scan_type)
             
-            alive_hosts = []
-            for host in scan_result['scan']:
-                if scan_result['scan'][host]['status']['state'] == 'up':
-                    alive_hosts.append(host)
+            # Enhance with fingerprinting
+            for device_info in discovered_devices:
+                device_info = self.fingerprinter.fingerprint_device(device_info)
             
-            return alive_hosts
-        except Exception as e:
-            print(f"Error during host discovery: {e}")
-            return []
-    
-    def _scan_device(self, ip_address: str) -> Optional[Device]:
-        """Scan individual device for ports and services"""
-        try:
-            # Port scan with common IoT ports
-            scan_result = self.nmap.scan(
-                hosts=ip_address,
-                ports=','.join(map(str, self.common_iot_ports)),
-                arguments='-sS -sV -O --version-intensity 5'
-            )
+            # Save to database if requested
+            if save_to_db:
+                self._save_discovered_devices(discovered_devices)
             
-            if ip_address not in scan_result['scan']:
-                return None
-            
-            host_info = scan_result['scan'][ip_address]
-            if host_info['status']['state'] != 'up':
-                return None
-            
-            # Extract device information
-            device = Device(ip_address=ip_address)
-            
-            # Get MAC address if available
-            if 'addresses' in host_info and 'mac' in host_info['addresses']:
-                device.mac_address = host_info['addresses']['mac']
-            
-            # Get hostname if available
-            if 'hostnames' in host_info and host_info['hostnames']:
-                device.hostname = host_info['hostnames'][0]['name']
-            
-            # Extract open ports and services
-            open_ports = []
-            services = {}
-            
-            if 'tcp' in host_info:
-                for port, port_info in host_info['tcp'].items():
-                    if port_info['state'] == 'open':
-                        open_ports.append(port)
-                        services[port] = {
-                            'name': port_info.get('name', ''),
-                            'product': port_info.get('product', ''),
-                            'version': port_info.get('version', ''),
-                            'extrainfo': port_info.get('extrainfo', '')
-                        }
-            
-            device.open_ports_list = open_ports
-            device.services_dict = services
-            device.protocols_list = self._detect_protocols(services)
-            
-            # Update device status
-            device.status = DeviceStatus.ONLINE
-            device.update_last_seen()
-            
-            return device
+            logger.info(f"Discovery completed. Found {len(discovered_devices)} devices")
+            return discovered_devices
             
         except Exception as e:
-            print(f"Error scanning device {ip_address}: {e}")
-            return None
+            logger.error(f"Device discovery failed: {str(e)}")
+            raise
     
-    def _detect_protocols(self, services: Dict) -> List[str]:
-        """Detect protocols based on services"""
-        protocols = []
+    async def discover_devices_async(self, network_range: str, 
+                                   save_to_db: bool = True) -> List[Dict[str, Any]]:
+        """Asynchronous device discovery for better performance."""
+        logger.info(f"Starting async device discovery for {network_range}")
         
-        for port, service_info in services.items():
-            service_name = service_info.get('name', '').lower()
-            product = service_info.get('product', '').lower()
+        try:
+            # Perform async network scan
+            discovered_devices = await self.async_scanner.scan_network_async(network_range)
             
-            # HTTP/HTTPS
-            if port in [80, 443, 8080, 8443] or 'http' in service_name:
-                protocols.append('http')
+            # Enhance with fingerprinting
+            for device_info in discovered_devices:
+                device_info = self.fingerprinter.fingerprint_device(device_info)
             
-            # MQTT
-            if port == 1883 or 'mqtt' in service_name:
-                protocols.append('mqtt')
+            # Save to database if requested
+            if save_to_db:
+                self._save_discovered_devices(discovered_devices)
             
-            # CoAP
-            if port == 5683 or 'coap' in service_name:
-                protocols.append('coap')
+            logger.info(f"Async discovery completed. Found {len(discovered_devices)} devices")
+            return discovered_devices
             
-            # RTSP (cameras)
-            if port == 554 or 'rtsp' in service_name:
-                protocols.append('rtsp')
-            
-            # SSH
-            if port == 22 or 'ssh' in service_name:
-                protocols.append('ssh')
-            
-            # Telnet
-            if port == 23 or 'telnet' in service_name:
-                protocols.append('telnet')
-            
-            # FTP
-            if port == 21 or 'ftp' in service_name:
-                protocols.append('ftp')
-        
-        return list(set(protocols))  # Remove duplicates
+        except Exception as e:
+            logger.error(f"Async device discovery failed: {str(e)}")
+            raise
     
-    async def scan_network_async(self, network_range: str) -> List[Device]:
-        """Asynchronous network scanning"""
-        loop = asyncio.get_event_loop()
+    def _save_discovered_devices(self, discovered_devices: List[Dict[str, Any]]):
+        """Save discovered devices to database."""
+        saved_count = 0
+        updated_count = 0
         
-        # Run network scan in thread pool
-        with ThreadPoolExecutor() as executor:
-            devices = await loop.run_in_executor(
-                executor, self.scan_network, network_range
-            )
-        
-        return devices
-
-class DeviceClassifier:
-    """Device classification and fingerprinting"""
-    
-    def __init__(self):
-        self.signature_db = self._load_signature_database()
-    
-    def classify_device(self, device: Device) -> Dict:
-        """
-        Classify device based on fingerprinting
-        
-        Args:
-            device: Device to classify
-            
-        Returns:
-            Classification result
-        """
-        classification = {
-            'device_type': 'unknown',
-            'manufacturer': 'unknown',
-            'model': 'unknown',
-            'confidence': 0.0,
-            'method': 'none'
-        }
-        
-        # Stage 1: Signature-based classification
-        signature_result = self._signature_classification(device)
-        if signature_result['confidence'] > 0.8:
-            return signature_result
-        
-        # Stage 2: Heuristic-based classification
-        heuristic_result = self._heuristic_classification(device)
-        if heuristic_result['confidence'] > 0.6:
-            return heuristic_result
-        
-        return classification
-    
-    def _signature_classification(self, device: Device) -> Dict:
-        """Database signature matching"""
-        best_match = {
-            'device_type': 'unknown',
-            'manufacturer': 'unknown',
-            'model': 'unknown',
-            'confidence': 0.0,
-            'method': 'signature'
-        }
-        
-        for signature in self.signature_db:
-            match_score = self._calculate_signature_match(device, signature)
-            
-            if match_score > best_match['confidence']:
-                best_match.update({
-                    'device_type': signature['device_type'],
-                    'manufacturer': signature['manufacturer'],
-                    'model': signature['model'],
-                    'confidence': match_score
-                })
-        
-        return best_match
-    
-    def _heuristic_classification(self, device: Device) -> Dict:
-        """Rule-based heuristic classification"""
-        score = 0.0
-        device_type = 'unknown'
-        manufacturer = 'unknown'
-        model = 'unknown'
-        
-        # Port pattern analysis
-        open_ports = set(device.open_ports_list)
-        
-        # Camera detection
-        if {554, 80}.issubset(open_ports) or {554, 443}.issubset(open_ports):
-            device_type = 'camera'
-            score += 0.4
-        
-        # Router detection
-        if {80, 443, 22}.issubset(open_ports):
-            device_type = 'router'
-            score += 0.3
-        
-        # Sensor detection
-        if 1883 in open_ports:
-            device_type = 'sensor'
-            score += 0.3
-        
-        # HTTP response analysis
-        if device.services_dict:
-            for port, service_info in device.services_dict.items():
-                if port in [80, 443, 8080, 8443]:
-                    server_header = service_info.get('product', '')
+        for device_info in discovered_devices:
+            try:
+                # Check if device already exists
+                existing_device = Device.find_by_ip(device_info['ip_address'])
+                
+                if existing_device:
+                    # Update existing device
+                    updated_info = merge_scan_results(
+                        existing_device.to_dict(), 
+                        device_info
+                    )
                     
-                    # Camera manufacturers
-                    if 'hikvision' in server_header.lower():
-                        manufacturer = 'Hikvision'
-                        score += 0.3
-                    elif 'dahua' in server_header.lower():
-                        manufacturer = 'Dahua'
-                        score += 0.3
-                    elif 'axis' in server_header.lower():
-                        manufacturer = 'Axis'
-                        score += 0.3
+                    # Update device attributes
+                    for key, value in updated_info.items():
+                        if hasattr(existing_device, key) and key != 'id':
+                            if key == 'open_ports':
+                                existing_device.open_ports_list = value
+                            elif key == 'protocols':
+                                existing_device.protocols_list = value
+                            elif key == 'services':
+                                existing_device.services_dict = value
+                            elif key == 'tags':
+                                existing_device.tags_list = value
+                            else:
+                                setattr(existing_device, key, value)
                     
-                    # Router manufacturers
-                    elif 'tp-link' in server_header.lower():
-                        manufacturer = 'TP-Link'
-                        device_type = 'router'
-                        score += 0.3
-                    elif 'asus' in server_header.lower():
-                        manufacturer = 'ASUS'
-                        device_type = 'router'
-                        score += 0.3
+                    existing_device.update_last_seen()
+                    updated_count += 1
+                    
+                else:
+                    # Create new device
+                    new_device = Device(
+                        ip_address=device_info['ip_address'],
+                        hostname=device_info.get('hostname'),
+                        mac_address=device_info.get('mac_address'),
+                        manufacturer=device_info.get('manufacturer'),
+                        device_type=device_info.get('device_type', 'unknown'),
+                        confidence_score=device_info.get('confidence_score', 0.0)
+                    )
+                    
+                    # Set complex fields
+                    if device_info.get('open_ports'):
+                        new_device.open_ports_list = device_info['open_ports']
+                    if device_info.get('protocols'):
+                        new_device.protocols_list = device_info['protocols']
+                    if device_info.get('services'):
+                        new_device.services_dict = device_info['services']
+                    
+                    db.session.add(new_device)
+                    saved_count += 1
+                
+            except Exception as e:
+                logger.error(f"Error saving device {device_info.get('ip_address')}: {str(e)}")
+                continue
         
-        return {
-            'device_type': device_type,
-            'manufacturer': manufacturer,
-            'model': model,
-            'confidence': min(score, 1.0),
-            'method': 'heuristic'
-        }
+        try:
+            db.session.commit()
+            logger.info(f"Saved {saved_count} new devices, updated {updated_count} existing devices")
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Failed to commit device changes: {str(e)}")
+            raise
     
-    def _calculate_signature_match(self, device: Device, signature: Dict) -> float:
-        """Calculate signature match score"""
-        score = 0.0
+    def rescan_device(self, device_id: int) -> Dict[str, Any]:
+        """Rescan a specific device."""
+        device = Device.query.get(device_id)
+        if not device:
+            raise ValueError(f"Device with ID {device_id} not found")
         
-        # Port matching
-        device_ports = set(device.open_ports_list)
-        signature_ports = set(signature.get('ports', []))
+        logger.info(f"Rescanning device {device.ip_address}")
         
-        if signature_ports:
-            port_match = len(device_ports.intersection(signature_ports)) / len(signature_ports)
-            score += port_match * 0.4
-        
-        # Service matching
-        if device.services_dict and 'services' in signature:
-            service_matches = 0
-            total_services = len(signature['services'])
+        try:
+            # Scan single host
+            self.scanner.nm.scan(device.ip_address, arguments='-sS -p 1-1000')
             
-            for sig_service in signature['services']:
-                for port, service_info in device.services_dict.items():
-                    if (sig_service['port'] == port and 
-                        sig_service['name'] == service_info.get('name', '')):
-                        service_matches += 1
-                        break
-            
-            if total_services > 0:
-                score += (service_matches / total_services) * 0.4
-        
-        # Manufacturer matching
-        if (device.manufacturer and 
-            signature.get('manufacturer', '').lower() == device.manufacturer.lower()):
-            score += 0.2
-        
-        return min(score, 1.0)
+            if device.ip_address in self.scanner.nm.all_hosts():
+                device_info = self.scanner._analyze_host(device.ip_address)
+                
+                if device_info:
+                    # Enhance with fingerprinting
+                    device_info = self.fingerprinter.fingerprint_device(device_info)
+                    
+                    # Update device in database
+                    self._save_discovered_devices([device_info])
+                    
+                    return device_info
+                else:
+                    # Device is offline
+                    device.mark_inactive()
+                    return {'status': 'offline', 'ip_address': device.ip_address}
+            else:
+                device.mark_inactive()
+                return {'status': 'offline', 'ip_address': device.ip_address}
+                
+        except Exception as e:
+            logger.error(f"Failed to rescan device {device.ip_address}: {str(e)}")
+            raise
     
-    def _load_signature_database(self) -> List[Dict]:
-        """Load device signature database"""
-        # This would typically load from a database or file
-        # For now, return a basic signature set
-        return [
-            {
-                'device_type': 'camera',
-                'manufacturer': 'Hikvision',
-                'model': 'DS-2CD2042WD-I',
-                'ports': [80, 443, 554, 8000],
-                'services': [
-                    {'port': 80, 'name': 'http'},
-                    {'port': 443, 'name': 'https'},
-                    {'port': 554, 'name': 'rtsp'}
-                ]
-            },
-            {
-                'device_type': 'router',
-                'manufacturer': 'TP-Link',
-                'model': 'Archer C7',
-                'ports': [80, 443, 22],
-                'services': [
-                    {'port': 80, 'name': 'http'},
-                    {'port': 443, 'name': 'https'},
-                    {'port': 22, 'name': 'ssh'}
-                ]
-            },
-            {
-                'device_type': 'sensor',
-                'manufacturer': 'Xiaomi',
-                'model': 'MCCGQ02HL',
-                'ports': [1883],
-                'services': [
-                    {'port': 1883, 'name': 'mqtt'}
-                ]
-            }
-        ]
-    
-    def update_device_classification(self, device: Device, classification: Dict):
-        """Update device with classification results"""
-        if classification['device_type'] != 'unknown':
-            device.device_type = DeviceType(classification['device_type'])
+    def cleanup_stale_devices(self, days: int = 7):
+        """Mark devices as inactive if not seen for specified days."""
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
         
-        if classification['manufacturer'] != 'unknown':
-            device.manufacturer = classification['manufacturer']
+        stale_devices = Device.query.filter(
+            Device.last_seen < cutoff_date,
+            Device.is_active == True
+        ).all()
         
-        if classification['model'] != 'unknown':
-            device.model = classification['model']
-        
-        device.confidence_score = classification['confidence']
-        
-        # Update fingerprint
-        fingerprint = {
-            'classification_method': classification['method'],
-            'classification_confidence': classification['confidence'],
-            'classification_timestamp': time.time()
-        }
-        device.fingerprint_dict = fingerprint
+        for device in stale_devices:
+            device.mark_inactive()
         
         db.session.commit()
+        
+        logger.info(f"Marked {len(stale_devices)} devices as inactive")
+        return len(stale_devices)
+    
+    def get_discovery_stats(self) -> Dict[str, Any]:
+        """Get device discovery statistics."""
+        total_devices = Device.query.count()
+        active_devices = Device.query.filter_by(is_active=True).count()
+        
+        # Device type distribution
+        device_types = db.session.query(
+            Device.device_type,
+            db.func.count(Device.id)
+        ).filter(Device.is_active == True).group_by(Device.device_type).all()
+        
+        # Manufacturer distribution
+        manufacturers = db.session.query(
+            Device.manufacturer,
+            db.func.count(Device.id)
+        ).filter(
+            Device.is_active == True,
+            Device.manufacturer.isnot(None)
+        ).group_by(Device.manufacturer).all()
+        
+        # Recent discoveries (last 24 hours)
+        yesterday = datetime.utcnow() - timedelta(days=1)
+        recent_discoveries = Device.query.filter(
+            Device.created_at >= yesterday
+        ).count()
+        
+        return {
+            'total_devices': total_devices,
+            'active_devices': active_devices,
+            'inactive_devices': total_devices - active_devices,
+            'recent_discoveries': recent_discoveries,
+            'device_types': dict(device_types),
+            'manufacturers': dict(manufacturers)
+        }
+    
+    def schedule_network_scan(self, network_range: str, scan_type: str = 'tcp_connect',
+                            interval_hours: int = 24) -> Dict[str, Any]:
+        """Schedule periodic network scanning."""
+        # This would integrate with Celery for background tasks
+        # For now, return configuration that could be used by a scheduler
+        
+        scan_config = {
+            'network_range': network_range,
+            'scan_type': scan_type,
+            'interval_hours': interval_hours,
+            'next_scan': datetime.utcnow() + timedelta(hours=interval_hours),
+            'enabled': True
+        }
+        
+        logger.info(f"Scheduled network scan for {network_range} every {interval_hours} hours")
+        return scan_config
+    
+    def export_devices(self, format: str = 'json', active_only: bool = True) -> str:
+        """Export device list in specified format."""
+        query = Device.query
+        
+        if active_only:
+            query = query.filter_by(is_active=True)
+        
+        devices = query.all()
+        
+        if format.lower() == 'json':
+            import json
+            device_data = [device.to_dict() for device in devices]
+            return json.dumps(device_data, indent=2, default=str)
+        
+        elif format.lower() == 'csv':
+            import csv
+            import io
+            
+            output = io.StringIO()
+            writer = csv.writer(output)
+            
+            # Header
+            writer.writerow([
+                'IP Address', 'Hostname', 'MAC Address', 'Manufacturer', 
+                'Device Type', 'Model', 'Open Ports', 'Last Seen', 'Risk Level'
+            ])
+            
+            # Data rows
+            for device in devices:
+                writer.writerow([
+                    device.ip_address,
+                    device.hostname or '',
+                    device.mac_address or '',
+                    device.manufacturer or '',
+                    device.device_type or '',
+                    device.model or '',
+                    ','.join(map(str, device.open_ports_list)),
+                    device.last_seen.isoformat() if device.last_seen else '',
+                    device.risk_level or ''
+                ])
+            
+            return output.getvalue()
+        
+        else:
+            raise ValueError(f"Unsupported export format: {format}")
+
+# Background task functions (for Celery integration)
+def periodic_network_scan(network_range: str, scan_type: str = 'tcp_connect'):
+    """Background task for periodic network scanning."""
+    discovery_service = DeviceDiscoveryService()
+    
+    try:
+        devices = discovery_service.discover_devices(network_range, scan_type)
+        logger.info(f"Periodic scan completed. Found {len(devices)} devices")
+        return len(devices)
+    except Exception as e:
+        logger.error(f"Periodic scan failed: {str(e)}")
+        raise
+
+def cleanup_stale_devices_task(days: int = 7):
+    """Background task for cleaning up stale devices."""
+    discovery_service = DeviceDiscoveryService()
+    
+    try:
+        count = discovery_service.cleanup_stale_devices(days)
+        logger.info(f"Cleanup task completed. Marked {count} devices as inactive")
+        return count
+    except Exception as e:
+        logger.error(f"Cleanup task failed: {str(e)}")
+        raise

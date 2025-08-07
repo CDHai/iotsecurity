@@ -1,112 +1,174 @@
+"""
+Configuration settings for IoT Security Assessment Framework
+"""
+
 import os
 from datetime import timedelta
 
 class Config:
-    """Base configuration class"""
+    """Base configuration class."""
+    
+    # Flask settings
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+    
+    # Database settings
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///iot_security.db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_RECORD_QUERIES = True
     
-    # Security
-    WTF_CSRF_ENABLED = True
-    WTF_CSRF_TIME_LIMIT = 3600
+    # JWT settings
+    JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or 'jwt-secret-change-in-production'
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(seconds=int(os.environ.get('JWT_ACCESS_TOKEN_EXPIRES', 3600)))
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
+    JWT_BLACKLIST_ENABLED = True
+    JWT_BLACKLIST_TOKEN_CHECKS = ['access', 'refresh']
     
-    # File upload
-    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB
-    UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+    # Security settings
+    WTF_CSRF_ENABLED = os.environ.get('WTF_CSRF_ENABLED', 'True').lower() == 'true'
+    BCRYPT_LOG_ROUNDS = int(os.environ.get('BCRYPT_LOG_ROUNDS', 12))
     
-    # Pagination
-    POSTS_PER_PAGE = 20
+    # Application settings
+    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file upload
+    REPORTS_DIR = os.environ.get('REPORTS_DIR', 'reports')
+    UPLOAD_FOLDER = 'uploads'
     
-    # Redis
-    REDIS_URL = os.environ.get('REDIS_URL') or 'redis://localhost:6379/0'
+    # Network scanning settings
+    DEFAULT_SCAN_TIMEOUT = int(os.environ.get('DEFAULT_SCAN_TIMEOUT', 30))
+    MAX_CONCURRENT_SCANS = int(os.environ.get('MAX_CONCURRENT_SCANS', 5))
+    SCAN_RESULTS_TTL = int(os.environ.get('SCAN_RESULTS_TTL', 3600))
     
-    # Celery
-    CELERY_BROKER_URL = REDIS_URL
-    CELERY_RESULT_BACKEND = REDIS_URL
+    # External APIs
+    CVE_API_URL = os.environ.get('CVE_API_URL', 'https://cve.circl.lu/api')
+    SHODAN_API_KEY = os.environ.get('SHODAN_API_KEY', '')
     
-    # Logging
-    LOG_LEVEL = 'INFO'
-    LOG_FORMAT = '%(asctime)s %(levelname)s %(name)s: %(message)s'
+    # Redis settings (for task queue)
+    REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+    
+    # Celery settings
+    CELERY_BROKER_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+    CELERY_RESULT_BACKEND = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+    
+    # Logging settings
+    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+    LOG_FILE = os.environ.get('LOG_FILE', 'logs/iot_security.log')
+    
+    # Mail settings (for notifications)
+    MAIL_SERVER = os.environ.get('MAIL_SERVER')
+    MAIL_PORT = int(os.environ.get('MAIL_PORT', 587))
+    MAIL_USE_TLS = os.environ.get('MAIL_USE_TLS', 'true').lower() in ['true', 'on', '1']
+    MAIL_USERNAME = os.environ.get('MAIL_USERNAME')
+    MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD')
+    
+    # Report generation settings
+    MAX_REPORT_SIZE_MB = int(os.environ.get('MAX_REPORT_SIZE_MB', 50))
+    REPORT_TEMPLATES_DIR = 'app/templates/reports'
+    
+    # Security test settings
+    TEST_MODULES_DIR = 'app/core/tests'
+    CUSTOM_TESTS_DIR = 'custom_tests'
+    
+    # Device signature database
+    DEVICE_SIGNATURES_FILE = 'data/device_signatures.json'
+    VULNERABILITY_DB_FILE = 'data/vulnerabilities.json'
+    
+    @staticmethod
+    def init_app(app):
+        """Initialize application configuration."""
+        # Create necessary directories
+        os.makedirs(app.config['REPORTS_DIR'], exist_ok=True)
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        os.makedirs('logs', exist_ok=True)
+        os.makedirs('data', exist_ok=True)
 
 class DevelopmentConfig(Config):
-    """Development configuration"""
+    """Development configuration."""
+    
     DEBUG = True
     TESTING = False
     
-    # Database
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or \
-        'sqlite:///' + os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dev.db')
-    
-    # Logging
+    # More verbose logging in development
     LOG_LEVEL = 'DEBUG'
     
-    # Development specific settings
-    FLASK_ENV = 'development'
-    TEMPLATES_AUTO_RELOAD = True
+    # Development database
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DEV_DATABASE_URL') or \
+        'sqlite:///iot_security_dev.db'
+    
+    # Disable CSRF in development for easier testing
+    WTF_CSRF_ENABLED = False
+    
+    # Shorter token expiry for development
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=30)
 
 class TestingConfig(Config):
-    """Testing configuration"""
-    TESTING = True
-    DEBUG = True
+    """Testing configuration."""
     
-    # Use in-memory database for testing
+    TESTING = True
+    DEBUG = False
+    
+    # In-memory database for testing
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
     
     # Disable CSRF for testing
     WTF_CSRF_ENABLED = False
     
-    # Use test secret key
-    SECRET_KEY = 'test-secret-key'
+    # Faster password hashing for tests
+    BCRYPT_LOG_ROUNDS = 4
+    
+    # Short token expiry for testing
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=5)
+    
+    # Disable external API calls in tests
+    CVE_API_URL = 'http://localhost:5000/mock/cve'
+    SHODAN_API_KEY = 'test-key'
 
 class ProductionConfig(Config):
-    """Production configuration"""
+    """Production configuration."""
+    
     DEBUG = False
     TESTING = False
     
-    # Database
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
-    if not SQLALCHEMY_DATABASE_URI:
-        raise ValueError("DATABASE_URL environment variable is required for production")
+    # Production database (PostgreSQL recommended)
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or \
+        'postgresql://user:password@localhost/iot_security'
     
-    # Security
-    SECRET_KEY = os.environ.get('SECRET_KEY')
-    if not SECRET_KEY:
-        raise ValueError("SECRET_KEY environment variable is required for production")
+    # Enhanced security settings
+    WTF_CSRF_ENABLED = True
+    BCRYPT_LOG_ROUNDS = 15
     
-    # SSL/TLS
-    SSL_REDIRECT = True
-    
-    # Logging
-    LOG_LEVEL = 'WARNING'
-    
-    # Performance
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        'pool_pre_ping': True,
-        'pool_recycle': 300,
-        'pool_timeout': 20,
-        'max_overflow': 0
-    }
-    
-    # Security headers
-    SECURITY_HEADERS = {
-        'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-        'X-Content-Type-Options': 'nosniff',
-        'X-Frame-Options': 'DENY',
-        'X-XSS-Protection': '1; mode=block',
-        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
-    }
-
-class StagingConfig(ProductionConfig):
-    """Staging configuration - similar to production but with debugging enabled"""
-    DEBUG = True
+    # Production logging
     LOG_LEVEL = 'INFO'
-    SSL_REDIRECT = False
+    
+    # Longer token expiry for production
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
+    
+    @classmethod
+    def init_app(cls, app):
+        """Initialize production-specific settings."""
+        Config.init_app(app)
+        
+        # Log to syslog in production
+        import logging
+        from logging.handlers import SysLogHandler
+        syslog_handler = SysLogHandler()
+        syslog_handler.setLevel(logging.INFO)
+        app.logger.addHandler(syslog_handler)
+
+class DockerConfig(ProductionConfig):
+    """Docker container configuration."""
+    
+    # Docker-specific settings
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or \
+        'postgresql://iot_user:iot_password@db:5432/iot_security'
+    
+    REDIS_URL = os.environ.get('REDIS_URL', 'redis://redis:6379/0')
+    CELERY_BROKER_URL = os.environ.get('REDIS_URL', 'redis://redis:6379/0')
+    CELERY_RESULT_BACKEND = os.environ.get('REDIS_URL', 'redis://redis:6379/0')
 
 # Configuration mapping
 config = {
     'development': DevelopmentConfig,
     'testing': TestingConfig,
     'production': ProductionConfig,
-    'staging': StagingConfig,
+    'docker': DockerConfig,
     'default': DevelopmentConfig
 }

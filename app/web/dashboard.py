@@ -1,219 +1,270 @@
-from flask import render_template, jsonify, request, current_app
+"""
+Dashboard web interface
+"""
+
+from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required, current_user
-from app.web import main_bp
-from app.models import Device, Assessment, Vulnerability
-from app import db
-from sqlalchemy import func
+from sqlalchemy import func, desc
 from datetime import datetime, timedelta
 
-@main_bp.route('/')
-@main_bp.route('/dashboard')
-@login_required
-def dashboard():
-    """Main dashboard page"""
-    return render_template('dashboard/index.html')
+from app import db
+from app.models.device import Device
+from app.models.assessment import Assessment
+from app.models.test_result import TestResult
+from app.models.vulnerability import Vulnerability
+from app.utils.decorators import handle_exceptions, require_permission
 
-@main_bp.route('/api/dashboard/stats')
+dashboard_bp = Blueprint('dashboard', __name__)
+
+@dashboard_bp.route('/')
 @login_required
-def dashboard_stats():
-    """Get dashboard statistics"""
-    try:
-        # Device statistics
-        total_devices = Device.query.count()
-        online_devices = Device.query.filter_by(status='online').count()
-        devices_with_vulns = Device.query.filter(Device.risk_score > 5.0).count()
-        
-        # Assessment statistics
-        total_assessments = Assessment.query.count()
-        completed_assessments = Assessment.query.filter_by(status='completed').count()
-        running_assessments = Assessment.query.filter_by(status='running').count()
-        
-        # Vulnerability statistics
-        critical_vulns = Vulnerability.query.filter_by(severity='critical').count()
-        high_vulns = Vulnerability.query.filter_by(severity='high').count()
-        medium_vulns = Vulnerability.query.filter_by(severity='medium').count()
-        
-        # Recent activity (last 7 days)
-        week_ago = datetime.utcnow() - timedelta(days=7)
-        recent_devices = Device.query.filter(Device.discovered_at >= week_ago).count()
-        recent_assessments = Assessment.query.filter(Assessment.created_at >= week_ago).count()
-        
-        # Device type distribution
-        device_types = db.session.query(
-            Device.device_type, 
-            func.count(Device.id)
-        ).group_by(Device.device_type).all()
-        
-        device_type_distribution = {
-            device_type.value if device_type else 'unknown': count 
-            for device_type, count in device_types
+@handle_exceptions()
+def index():
+    """Main dashboard page."""
+    # Get dashboard statistics
+    stats = get_dashboard_stats()
+    
+    # Get recent activities
+    recent_assessments = Assessment.get_recent_assessments(limit=5)
+    recent_devices = Device.query.filter_by(is_active=True).order_by(desc(Device.last_seen)).limit(5).all()
+    
+    # Get vulnerability trends (last 30 days)
+    vulnerability_trends = get_vulnerability_trends()
+    
+    # Get device type distribution
+    device_distribution = get_device_type_distribution()
+    
+    return render_template('dashboard/index.html',
+                         stats=stats,
+                         recent_assessments=recent_assessments,
+                         recent_devices=recent_devices,
+                         vulnerability_trends=vulnerability_trends,
+                         device_distribution=device_distribution)
+
+@dashboard_bp.route('/api/stats')
+@login_required
+@handle_exceptions()
+def api_stats():
+    """API endpoint for dashboard statistics."""
+    stats = get_dashboard_stats()
+    return jsonify(stats)
+
+@dashboard_bp.route('/api/recent-activity')
+@login_required
+@handle_exceptions()
+def api_recent_activity():
+    """API endpoint for recent activity."""
+    limit = request.args.get('limit', 10, type=int)
+    
+    recent_assessments = Assessment.get_recent_assessments(limit=limit)
+    recent_devices = Device.query.filter_by(is_active=True).order_by(desc(Device.last_seen)).limit(limit).all()
+    
+    return jsonify({
+        'assessments': [assessment.to_dict() for assessment in recent_assessments],
+        'devices': [device.to_dict() for device in recent_devices]
+    })
+
+@dashboard_bp.route('/api/vulnerability-trends')
+@login_required
+@handle_exceptions()
+def api_vulnerability_trends():
+    """API endpoint for vulnerability trends."""
+    days = request.args.get('days', 30, type=int)
+    trends = get_vulnerability_trends(days=days)
+    return jsonify(trends)
+
+@dashboard_bp.route('/api/device-distribution')
+@login_required
+@handle_exceptions()
+def api_device_distribution():
+    """API endpoint for device type distribution."""
+    distribution = get_device_type_distribution()
+    return jsonify(distribution)
+
+@dashboard_bp.route('/api/assessment-status')
+@login_required
+@handle_exceptions()
+def api_assessment_status():
+    """API endpoint for assessment status overview."""
+    if not current_user.can_access('read'):
+        return jsonify({'error': 'Access denied'}), 403
+    
+    # Get assessment status counts
+    status_counts = db.session.query(
+        Assessment.status,
+        func.count(Assessment.id).label('count')
+    ).group_by(Assessment.status).all()
+    
+    status_data = {status: count for status, count in status_counts}
+    
+    # Get running assessments details
+    running_assessments = Assessment.get_running_assessments()
+    
+    return jsonify({
+        'status_counts': status_data,
+        'running_assessments': [assessment.to_dict() for assessment in running_assessments]
+    })
+
+@dashboard_bp.route('/api/security-overview')
+@login_required
+@handle_exceptions()
+def api_security_overview():
+    """API endpoint for security overview."""
+    if not current_user.can_access('read'):
+        return jsonify({'error': 'Access denied'}), 403
+    
+    # Get high-risk devices
+    high_risk_devices = Device.get_high_risk_devices()
+    
+    # Get critical vulnerabilities
+    critical_vulns = Vulnerability.get_critical_vulnerabilities()
+    
+    # Get recent failed tests
+    recent_failures = TestResult.get_failed_results()[:10]
+    
+    return jsonify({
+        'high_risk_devices': [device.to_dict() for device in high_risk_devices],
+        'critical_vulnerabilities': [vuln.to_dict() for vuln in critical_vulns],
+        'recent_failures': [result.to_dict() for result in recent_failures]
+    })
+
+def get_dashboard_stats():
+    """Get dashboard statistics."""
+    # Device statistics
+    total_devices = Device.query.count()
+    active_devices = Device.query.filter_by(is_active=True).count()
+    high_risk_devices = Device.query.filter(Device.risk_level.in_(['high', 'critical'])).count()
+    
+    # Assessment statistics
+    total_assessments = Assessment.query.count()
+    running_assessments = Assessment.query.filter_by(status='running').count()
+    completed_assessments = Assessment.query.filter_by(status='completed').count()
+    
+    # Get assessments from last 7 days
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    recent_assessments = Assessment.query.filter(Assessment.created_at >= week_ago).count()
+    
+    # Vulnerability statistics
+    total_vulnerabilities = Vulnerability.query.count()
+    critical_vulns = Vulnerability.query.filter_by(severity='critical').count()
+    high_vulns = Vulnerability.query.filter_by(severity='high').count()
+    
+    # Test result statistics
+    total_tests = TestResult.query.count()
+    failed_tests = TestResult.query.filter_by(status='fail').count()
+    
+    # Calculate success rate
+    success_rate = ((total_tests - failed_tests) / total_tests * 100) if total_tests > 0 else 0
+    
+    return {
+        'devices': {
+            'total': total_devices,
+            'active': active_devices,
+            'high_risk': high_risk_devices,
+            'offline': total_devices - active_devices
+        },
+        'assessments': {
+            'total': total_assessments,
+            'running': running_assessments,
+            'completed': completed_assessments,
+            'recent': recent_assessments
+        },
+        'vulnerabilities': {
+            'total': total_vulnerabilities,
+            'critical': critical_vulns,
+            'high': high_vulns
+        },
+        'tests': {
+            'total': total_tests,
+            'failed': failed_tests,
+            'success_rate': round(success_rate, 1)
         }
-        
-        # Risk distribution
-        risk_distribution = {
-            'critical': Device.query.filter(Device.risk_score >= 8.0).count(),
-            'high': Device.query.filter(Device.risk_score >= 6.0, Device.risk_score < 8.0).count(),
-            'medium': Device.query.filter(Device.risk_score >= 4.0, Device.risk_score < 6.0).count(),
-            'low': Device.query.filter(Device.risk_score >= 2.0, Device.risk_score < 4.0).count(),
-            'safe': Device.query.filter(Device.risk_score < 2.0).count()
-        }
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'devices': {
-                    'total': total_devices,
-                    'online': online_devices,
-                    'with_vulnerabilities': devices_with_vulns,
-                    'recent': recent_devices
-                },
-                'assessments': {
-                    'total': total_assessments,
-                    'completed': completed_assessments,
-                    'running': running_assessments,
-                    'recent': recent_assessments
-                },
-                'vulnerabilities': {
-                    'critical': critical_vulns,
-                    'high': high_vulns,
-                    'medium': medium_vulns
-                },
-                'device_types': device_type_distribution,
-                'risk_distribution': risk_distribution
-            }
+    }
+
+def get_vulnerability_trends(days=30):
+    """Get vulnerability trends for the last N days."""
+    end_date = datetime.utcnow().date()
+    start_date = end_date - timedelta(days=days)
+    
+    # Query assessments by day
+    trends = db.session.query(
+        func.date(Assessment.completed_at).label('date'),
+        func.sum(Assessment.critical_vulns).label('critical'),
+        func.sum(Assessment.high_vulns).label('high'),
+        func.sum(Assessment.medium_vulns).label('medium'),
+        func.sum(Assessment.low_vulns).label('low')
+    ).filter(
+        Assessment.completed_at.between(start_date, end_date),
+        Assessment.status == 'completed'
+    ).group_by(
+        func.date(Assessment.completed_at)
+    ).order_by('date').all()
+    
+    # Format data for chart
+    trend_data = []
+    for trend in trends:
+        trend_data.append({
+            'date': trend.date.isoformat(),
+            'critical': trend.critical or 0,
+            'high': trend.high or 0,
+            'medium': trend.medium or 0,
+            'low': trend.low or 0
         })
+    
+    return trend_data
+
+def get_device_type_distribution():
+    """Get device type distribution."""
+    distribution = db.session.query(
+        Device.device_type,
+        func.count(Device.id).label('count')
+    ).filter(
+        Device.is_active == True,
+        Device.device_type.isnot(None)
+    ).group_by(Device.device_type).all()
+    
+    # Format data for chart
+    distribution_data = []
+    for device_type, count in distribution:
+        distribution_data.append({
+            'type': device_type or 'Unknown',
+            'count': count
+        })
+    
+    return distribution_data
+
+@dashboard_bp.route('/health')
+def health_check():
+    """Health check endpoint."""
+    try:
+        # Check database connection
+        db.session.execute('SELECT 1')
         
-    except Exception as e:
-        current_app.logger.error(f"Error getting dashboard stats: {e}")
         return jsonify({
-            'success': False,
-            'error': 'Failed to load dashboard statistics'
+            'status': 'healthy',
+            'timestamp': datetime.utcnow().isoformat(),
+            'version': '1.0.0'
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat()
         }), 500
 
-@main_bp.route('/api/dashboard/recent-activity')
-@login_required
-def recent_activity():
-    """Get recent activity for dashboard"""
-    try:
-        # Recent assessments
-        recent_assessments = Assessment.query.order_by(
-            Assessment.created_at.desc()
-        ).limit(5).all()
-        
-        # Recent devices
-        recent_devices = Device.query.order_by(
-            Device.discovered_at.desc()
-        ).limit(5).all()
-        
-        activity_data = {
-            'assessments': [
-                {
-                    'id': assessment.id,
-                    'device_ip': assessment.device.ip_address,
-                    'status': assessment.status.value,
-                    'risk_score': assessment.risk_score,
-                    'created_at': assessment.created_at.isoformat(),
-                    'device_type': assessment.device.device_type.value if assessment.device.device_type else 'unknown'
-                }
-                for assessment in recent_assessments
-            ],
-            'devices': [
-                {
-                    'id': device.id,
-                    'ip_address': device.ip_address,
-                    'device_type': device.device_type.value if device.device_type else 'unknown',
-                    'manufacturer': device.manufacturer,
-                    'risk_score': device.risk_score,
-                    'discovered_at': device.discovered_at.isoformat()
-                }
-                for device in recent_devices
-            ]
-        }
-        
-        return jsonify({
-            'success': True,
-            'data': activity_data
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Error getting recent activity: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to load recent activity'
-        }), 500
+# Error handlers
+@dashboard_bp.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors."""
+    return render_template('errors/404.html'), 404
 
-@main_bp.route('/api/dashboard/security-trend')
-@login_required
-def security_trend():
-    """Get security trend data for charts"""
-    try:
-        # Get data for last 30 days
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=30)
-        
-        # Daily device discoveries
-        daily_discoveries = db.session.query(
-            func.date(Device.discovered_at).label('date'),
-            func.count(Device.id).label('count')
-        ).filter(
-            Device.discovered_at >= start_date
-        ).group_by(
-            func.date(Device.discovered_at)
-        ).all()
-        
-        # Daily assessments
-        daily_assessments = db.session.query(
-            func.date(Assessment.created_at).label('date'),
-            func.count(Assessment.id).label('count')
-        ).filter(
-            Assessment.created_at >= start_date
-        ).group_by(
-            func.date(Assessment.created_at)
-        ).all()
-        
-        # Daily vulnerabilities found
-        daily_vulns = db.session.query(
-            func.date(TestResult.executed_at).label('date'),
-            func.count(TestResult.result_id).label('count')
-        ).filter(
-            TestResult.executed_at >= start_date,
-            TestResult.status == 'fail'
-        ).group_by(
-            func.date(TestResult.executed_at)
-        ).all()
-        
-        trend_data = {
-            'discoveries': [
-                {
-                    'date': discovery.date.isoformat(),
-                    'count': discovery.count
-                }
-                for discovery in daily_discoveries
-            ],
-            'assessments': [
-                {
-                    'date': assessment.date.isoformat(),
-                    'count': assessment.count
-                }
-                for assessment in daily_assessments
-            ],
-            'vulnerabilities': [
-                {
-                    'date': vuln.date.isoformat(),
-                    'count': vuln.count
-                }
-                for vuln in daily_vulns
-            ]
-        }
-        
-        return jsonify({
-            'success': True,
-            'data': trend_data
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Error getting security trend: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to load security trend data'
-        }), 500
+@dashboard_bp.errorhandler(403)
+def forbidden(error):
+    """Handle 403 errors."""
+    return render_template('errors/403.html'), 403
+
+@dashboard_bp.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors."""
+    db.session.rollback()
+    return render_template('errors/500.html'), 500

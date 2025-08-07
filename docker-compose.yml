@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: iot_security
+      POSTGRES_USER: iot_user
+      POSTGRES_PASSWORD: iot_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iot_user -d iot_security"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Main Flask Application
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://iot_user:iot_password@db:5432/iot_security
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=your-production-secret-key-change-this
+      - JWT_SECRET_KEY=your-jwt-secret-key-change-this
+    volumes:
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      - ./uploads:/app/uploads
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Celery Worker for background tasks
+  worker:
+    build: .
+    command: celery -A app.celery worker --loglevel=info
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://iot_user:iot_password@db:5432/iot_security
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=your-production-secret-key-change-this
+    volumes:
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      - ./data:/app/data
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  # Celery Beat for scheduled tasks
+  beat:
+    build: .
+    command: celery -A app.celery beat --loglevel=info
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://iot_user:iot_password@db:5432/iot_security
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=your-production-secret-key-change-this
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  # Nginx reverse proxy (optional)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - web
+    restart: unless-stopped
+    profiles:
+      - production
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: iot_security_network

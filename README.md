@@ -1,264 +1,405 @@
-# IoT Security Framework
+# IoT Security Assessment Framework
 
-Framework đánh giá bảo mật các thiết bị IoT trong hệ sinh thái Smart Home.
+[![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://python.org)
+[![Flask Version](https://img.shields.io/badge/flask-2.3+-green.svg)](https://flask.palletsprojects.com/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](Dockerfile)
 
-## Tính năng chính
+Một framework tự động hóa việc đánh giá bảo mật các thiết bị IoT trong hệ sinh thái Smart Home, được phát triển như một đề tài tốt nghiệp.
 
-- **Network Discovery**: Tự động phát hiện thiết bị IoT trên mạng
-- **Device Classification**: Phân loại thiết bị dựa trên signature và heuristic
-- **Vulnerability Assessment**: Đánh giá lỗ hổng bảo mật tự động
-- **Security Reporting**: Tạo báo cáo bảo mật chi tiết
-- **Web Interface**: Giao diện web thân thiện
-- **REST API**: API đầy đủ cho integration
+## ✨ Tính năng chính
 
-## Cài đặt
+### 🔍 Network Discovery & Device Detection
+- Tự động phát hiện các thiết bị IoT trên mạng
+- Phân loại và nhận dạng thiết bị dựa trên fingerprinting
+- Hỗ trợ IPv4 và IPv6
+- Quét port và phát hiện service
 
-### Yêu cầu hệ thống
+### 🛡️ Multi-Protocol Security Testing
+- Hỗ trợ HTTP/HTTPS, MQTT, CoAP, SSH, Telnet
+- Test suite có thể tùy chỉnh
+- Kiểm tra lỗ hổng CVE database
+- Phân tích cấu hình bảo mật
 
-- Python 3.9+
-- SQLite (development) / PostgreSQL (production)
-- Redis (optional, cho background tasks)
+### 📊 Comprehensive Reporting
+- Dashboard thời gian thực
+- Báo cáo chi tiết với mức độ rủi ro
+- Export PDF và JSON
+- Theo dõi xu hướng bảo mật
 
-### Cài đặt dependencies
+### 🔐 Authentication & Authorization
+- Hệ thống role-based access control
+- JWT authentication cho API
+- Multi-user support với các quyền khác nhau
+
+### 🌐 RESTful API
+- API đầy đủ cho tích hợp
+- Swagger/OpenAPI documentation
+- Rate limiting và security headers
+- Real-time WebSocket updates
+
+## 🚀 Quick Start
+
+### Sử dụng Docker (Khuyên dùng)
 
 ```bash
 # Clone repository
-git clone <repository-url>
+git clone https://github.com/your-username/iot-security-framework.git
+cd iot-security-framework
+
+# Copy environment file
+cp env.example .env
+
+# Chỉnh sửa .env với thông tin cấu hình của bạn
+nano .env
+
+# Chạy với Docker Compose
+docker-compose up -d
+
+# Khởi tạo database và seed data
+docker-compose exec web python manage.py init_db
+docker-compose exec web python manage.py seed_db
+```
+
+Truy cập ứng dụng tại: http://localhost:5000
+
+### Development Setup
+
+```bash
+# Clone repository
+git clone https://github.com/your-username/iot-security-framework.git
 cd iot-security-framework
 
 # Tạo virtual environment
-python3.9 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
+python -m venv venv
+source venv/bin/activate  # Linux/macOS
+# hoặc
+venv\Scripts\activate  # Windows
 
 # Cài đặt dependencies
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# Copy environment file
+cp env.example .env
+
+# Khởi tạo database
+python manage.py init_db
+python manage.py seed_db
+
+# Chạy development server
+flask run --debug
 ```
 
-### Cấu hình
+## 📋 System Requirements
 
-1. Tạo file `.env` từ `.env.example`:
+- Python 3.9+
+- PostgreSQL 12+ (hoặc SQLite cho development)
+- Redis 6+ (optional, cho caching và task queue)
+- Docker & Docker Compose (cho containerized deployment)
+
+### Network Tools (cho security testing)
+- nmap
+- curl
+- netcat
+- openssl
+
+## 🏗️ Kiến trúc hệ thống
+
+```
+┌─────────────────┬─────────────────┬─────────────────┬───────────┐
+│   Web Interface │   REST API      │   CLI Interface │  Reports  │
+│   - Dashboard   │   - Device API  │   - Scan Cmd    │  - HTML   │
+│   - Device Mgmt │   - Scan API    │   - Config Cmd  │  - PDF    │
+│   - Reports     │   - Report API  │   - Report Cmd  │  - JSON   │
+└─────────────────┴─────────────────┴─────────────────┴───────────┘
+                                │
+┌─────────────────────────────────────────────────────────────────┐
+│                    Business Logic Layer                         │
+│  ┌─────────────┬─────────────┬─────────────┬─────────────────┐  │
+│  │   Device    │ Assessment  │    Test     │   Vulnerability │  │
+│  │ Management  │   Engine    │   Suites    │    Database     │  │
+│  └─────────────┴─────────────┴─────────────┴─────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+┌─────────────────────────────────────────────────────────────────┐
+│                      Data Layer                                 │
+│  ┌─────────────┬─────────────┬─────────────┬─────────────────┐  │
+│  │ PostgreSQL  │    Redis    │ File System │   External APIs │  │
+│  │  Database   │   Cache     │   Storage   │   (CVE, etc.)   │  │
+│  └─────────────┴─────────────┴─────────────┴─────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 🔧 Cấu hình
+
+### Environment Variables
+
+Tạo file `.env` từ `env.example` và cấu hình:
+
 ```bash
-cp .env.example .env
-```
-
-2. Chỉnh sửa file `.env`:
-```env
-FLASK_ENV=development
+# Flask Configuration
+FLASK_APP=app.py
+FLASK_ENV=production
 SECRET_KEY=your-secret-key-here
-DATABASE_URL=sqlite:///dev.db
+
+# Database
+DATABASE_URL=postgresql://user:password@localhost/iot_security
+
+# JWT
+JWT_SECRET_KEY=your-jwt-secret-key
+JWT_ACCESS_TOKEN_EXPIRES=3600
+
+# External APIs
+CVE_API_URL=https://cve.circl.lu/api
+SHODAN_API_KEY=your-shodan-api-key
+
+# Redis (optional)
 REDIS_URL=redis://localhost:6379/0
 ```
 
-### Khởi tạo database
+### Database Migration
 
 ```bash
-# Tạo database tables
-python app.py
+# Khởi tạo database
+python manage.py init_db
+
+# Seed với dữ liệu mẫu
+python manage.py seed_db
+
+# Tạo admin user
+python manage.py create_admin
 ```
 
-## Sử dụng
-
-### Chạy ứng dụng
-
-```bash
-python app.py
-```
-
-Ứng dụng sẽ chạy tại `http://localhost:5000`
-
-### Tài khoản mặc định
-
-- **Admin**: `admin` / `admin123`
-- **Tester**: `tester` / `test123`
-
-### Network Scanning
-
-1. Đăng nhập vào web interface
-2. Vào trang "Devices"
-3. Click "Scan Network"
-4. Nhập network range (VD: `192.168.1.0/24`)
-5. Chờ scan hoàn thành
-
-### Security Assessment
-
-1. Chọn device từ danh sách
-2. Click "New Assessment"
-3. Chọn test suite
-4. Click "Start Assessment"
-5. Xem kết quả và báo cáo
-
-## API Documentation
+## 📚 API Documentation
 
 ### Authentication
 
 ```bash
-# Login
-POST /api/auth/login
-{
-    "username": "admin",
-    "password": "admin123"
-}
+# Đăng ký user mới
+curl -X POST http://localhost:5000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "testuser",
+    "email": "test@example.com",
+    "password": "password123",
+    "password_confirm": "password123"
+  }'
 
-# Get current user
-GET /api/auth/user
+# Đăng nhập
+curl -X POST http://localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "testuser",
+    "password": "password123"
+  }'
 ```
 
-### Devices
+### Device Management
 
 ```bash
-# Get devices
-GET /api/devices?page=1&per_page=20
+# Lấy danh sách devices
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:5000/api/devices/
 
-# Get specific device
-GET /api/devices/{device_id}
-
-# Scan network
-POST /api/devices/scan
-{
-    "network_range": "192.168.1.0/24"
-}
-
-# Update device
-PUT /api/devices/{device_id}
-{
-    "hostname": "new-hostname",
-    "manufacturer": "New Manufacturer"
-}
+# Thêm device mới
+curl -X POST http://localhost:5000/api/devices/ \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ip_address": "192.168.1.100",
+    "hostname": "smart-camera-01",
+    "device_type": "camera",
+    "manufacturer": "Hikvision"
+  }'
 ```
 
-### Assessments
+### Assessment Management
 
 ```bash
-# Get assessments
-GET /api/assessments?status=completed
-
-# Create assessment
-POST /api/assessments
-{
+# Tạo assessment mới
+curl -X POST http://localhost:5000/api/assessments/ \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
     "device_id": 1,
-    "test_suite_id": 1,
-    "name": "Security Assessment",
-    "description": "Comprehensive security test"
-}
+    "name": "Security Assessment - Camera 01",
+    "scan_type": "comprehensive",
+    "target_protocols": ["http", "https", "rtsp"]
+  }'
 
-# Start assessment
-POST /api/assessments/{assessment_id}/start
-
-# Get assessment details
-GET /api/assessments/{assessment_id}
+# Bắt đầu assessment
+curl -X POST http://localhost:5000/api/assessments/1/start \
+  -H "Authorization: Bearer <token>"
 ```
 
-### Reports
+Xem full API documentation tại: http://localhost:5000/api/docs
+
+## 🧪 Testing
 
 ```bash
-# Generate report
-POST /api/reports/generate
-{
-    "assessment_id": 1,
-    "report_type": "technical",
-    "format": "json"
-}
+# Chạy tất cả tests
+pytest
 
-# Export report
-GET /api/reports/export/{assessment_id}?format=json
+# Chạy với coverage
+pytest --cov=app tests/
+
+# Chạy specific test file
+pytest tests/test_models.py
+
+# Chạy với verbose output
+pytest -v tests/
 ```
 
-## Cấu trúc Project
+## 🔒 Security Features
+
+### Authentication & Authorization
+- JWT-based authentication
+- Role-based access control (Admin, Tester, Viewer)
+- Session management
+- Password hashing với bcrypt
+
+### API Security
+- Rate limiting
+- CORS protection
+- Input validation và sanitization
+- SQL injection prevention
+- XSS protection
+
+### Network Security
+- Non-destructive testing by default
+- Configurable scan intensity
+- Network isolation recommendations
+- Secure credential storage
+
+## 📊 Default Test Suites
+
+### Basic IoT Security
+- Default credential check
+- Weak password policy
+- HTTP banner grabbing
+- Telnet access check
+
+### Comprehensive Assessment
+- SSL/TLS configuration analysis
+- Web directory enumeration
+- MQTT security check
+- Firmware analysis
+
+### Smart Camera Security
+- RTSP stream access
+- ONVIF service discovery
+- Camera-specific CVE checks
+
+## 🛠️ Management Commands
+
+```bash
+# Database management
+python manage.py init_db          # Khởi tạo database
+python manage.py seed_db          # Seed dữ liệu mẫu
+python manage.py reset_db         # Reset database
+
+# User management
+python manage.py create_admin     # Tạo admin user
+python manage.py list_users       # Liệt kê users
+python manage.py change_role username admin
+
+# System utilities
+python manage.py stats            # Thống kê hệ thống
+python manage.py check_health     # Kiểm tra sức khỏe hệ thống
+python manage.py backup_db        # Backup database
+```
+
+## 🐳 Docker Deployment
+
+### Production Deployment
+
+```bash
+# Build và chạy với PostgreSQL
+docker-compose -f docker-compose.yml up -d
+
+# Khởi tạo database
+docker-compose exec web python manage.py init_db
+docker-compose exec web python manage.py seed_db
+```
+
+### Development với Docker
+
+```bash
+# Chạy development environment
+docker-compose -f docker-compose.dev.yml up -d
+```
+
+## 📁 Cấu trúc Project
 
 ```
 iot-security-framework/
-├── app/
-│   ├── __init__.py          # Flask app factory
-│   ├── config.py            # Configuration classes
-│   ├── models/              # Database models
+├── app/                          # Main application
+│   ├── __init__.py              # App factory
+│   ├── config.py                # Configuration
+│   ├── models/                  # Database models
 │   │   ├── user.py
 │   │   ├── device.py
 │   │   ├── assessment.py
-│   │   └── vulnerability.py
-│   ├── core/                # Core business logic
-│   │   ├── discovery.py     # Network scanning
-│   │   ├── assessment.py    # Vulnerability testing
-│   │   └── reporting.py     # Report generation
-│   ├── web/                 # Web interface
-│   │   ├── dashboard.py
+│   │   └── ...
+│   ├── api/                     # REST API endpoints
+│   │   ├── auth.py
 │   │   ├── devices.py
 │   │   ├── assessments.py
 │   │   └── reports.py
-│   ├── api/                 # REST API
+│   ├── web/                     # Web interface
+│   │   ├── dashboard.py
 │   │   ├── devices.py
-│   │   ├── assessments.py
-│   │   ├── reports.py
-│   │   └── auth.py
-│   └── auth/                # Authentication
-│       └── routes.py
-├── templates/               # HTML templates
-├── static/                  # CSS, JS, images
-├── tests/                   # Unit tests
-├── requirements.txt         # Python dependencies
-├── app.py                  # Main application
-└── README.md
+│   │   └── ...
+│   ├── auth/                    # Authentication
+│   ├── core/                    # Core functionality
+│   └── utils/                   # Utilities
+├── tests/                       # Test suite
+├── docs/                        # Documentation
+├── scripts/                     # Utility scripts
+├── requirements.txt             # Python dependencies
+├── Dockerfile                   # Docker configuration
+├── docker-compose.yml           # Docker Compose
+├── manage.py                    # Management script
+└── README.md                    # This file
 ```
 
-## Development
+## 🤝 Contributing
 
-### Chạy tests
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-```bash
-pytest tests/
-```
+### Development Guidelines
 
-### Code formatting
+- Follow PEP 8 style guide
+- Write comprehensive tests
+- Update documentation
+- Use meaningful commit messages
 
-```bash
-black app/
-flake8 app/
-```
+## 📝 License
 
-### Database migrations
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-```bash
-flask db init
-flask db migrate -m "Initial migration"
-flask db upgrade
-```
+## 👥 Authors
 
-## Deployment
+- **Your Name** - *Initial work* - [YourGitHub](https://github.com/yourusername)
 
-### Docker
+## 🙏 Acknowledgments
 
-```bash
-# Build image
-docker build -t iot-security-framework .
+- Flask và ecosystem
+- OWASP IoT Security Guidelines
+- CVE Database
+- Security research community
+- Các thư viện open source được sử dụng
 
-# Run container
-docker run -p 5000:5000 iot-security-framework
-```
+## 📞 Support
 
-### Docker Compose
+- 📧 Email: your.email@example.com
+- 🐛 Issues: [GitHub Issues](https://github.com/your-username/iot-security-framework/issues)
+- 📖 Documentation: [Wiki](https://github.com/your-username/iot-security-framework/wiki)
 
-```bash
-# Start all services
-docker-compose up -d
+---
 
-# View logs
-docker-compose logs -f
-```
-
-## Contributing
-
-1. Fork repository
-2. Tạo feature branch
-3. Commit changes
-4. Push to branch
-5. Tạo Pull Request
-
-## License
-
-MIT License - xem file LICENSE để biết thêm chi tiết.
-
-## Support
-
-- Email: support@iotsecurity.local
-- Documentation: [Wiki](link-to-wiki)
-- Issues: [GitHub Issues](link-to-issues)
+**⚠️ Lưu ý**: Framework này được phát triển cho mục đích giáo dục và nghiên cứu. Chỉ sử dụng trên các thiết bị và mạng mà bạn có quyền kiểm tra. Tác giả không chịu trách nhiệm về việc sử dụng sai mục đích.

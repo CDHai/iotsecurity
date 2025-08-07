@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - IoT Security Framework{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- Page Header -->
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="h2 mb-0">
+                <i class="fas fa-tachometer-alt me-2"></i>Security Dashboard
+            </h1>
+            <p class="text-muted">Monitor your IoT device security status</p>
+        </div>
+        <div class="col-auto">
+            <button class="btn btn-primary" onclick="refreshDashboard()">
+                <i class="fas fa-sync-alt me-1"></i>Refresh
+            </button>
+        </div>
+    </div>
+
+    <!-- Statistics Cards -->
+    <div class="row mb-4">
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card stats-card info">
+                <div class="card-body">
+                    <div class="row align-items-center">
+                        <div class="col">
+                            <div class="stats-number" id="total-devices">{{ stats.devices.total }}</div>
+                            <div class="stats-label">Total Devices</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-microchip fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card stats-card success">
+                <div class="card-body">
+                    <div class="row align-items-center">
+                        <div class="col">
+                            <div class="stats-number" id="active-devices">{{ stats.devices.active }}</div>
+                            <div class="stats-label">Active Devices</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-wifi fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card stats-card warning">
+                <div class="card-body">
+                    <div class="row align-items-center">
+                        <div class="col">
+                            <div class="stats-number" id="high-risk-devices">{{ stats.devices.high_risk }}</div>
+                            <div class="stats-label">High Risk Devices</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-exclamation-triangle fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card stats-card danger">
+                <div class="card-body">
+                    <div class="row align-items-center">
+                        <div class="col">
+                            <div class="stats-number" id="total-vulnerabilities">{{ stats.vulnerabilities.total }}</div>
+                            <div class="stats-label">Vulnerabilities</div>
+                        </div>
+                        <div class="col-auto">
+                            <i class="fas fa-bug fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="row mb-4">
+        <div class="col-lg-6 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-chart-pie me-2"></i>Device Types Distribution
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="deviceTypeChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-chart-bar me-2"></i>Risk Level Distribution
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="riskDistributionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Vulnerability Trend Chart -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-chart-line me-2"></i>Vulnerability Trends (Last 30 Days)
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="chart-container">
+                        <canvas id="vulnerabilityTrendChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="row">
+        <div class="col-lg-6 mb-4">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-history me-2"></i>Recent Assessments
+                    </h5>
+                    <a href="{{ url_for('assessments.list_assessments') }}" class="btn btn-sm btn-outline-primary">
+                        View All
+                    </a>
+                </div>
+                <div class="card-body">
+                    {% if recent_assessments %}
+                        <div class="list-group list-group-flush">
+                            {% for assessment in recent_assessments %}
+                            <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                <div>
+                                    <div class="fw-bold">{{ assessment.name }}</div>
+                                    <small class="text-muted">
+                                        {{ assessment.device.ip_address }} • 
+                                        {{ assessment.created_at.strftime('%Y-%m-%d %H:%M') }}
+                                    </small>
+                                </div>
+                                <span class="badge {{ 'bg-success' if assessment.status == 'completed' else 'bg-warning' if assessment.status == 'running' else 'bg-secondary' }}">
+                                    {{ assessment.status.title() }}
+                                </span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="text-center text-muted py-4">
+                            <i class="fas fa-search fa-3x mb-3"></i>
+                            <p>No recent assessments</p>
+                            <a href="{{ url_for('assessments.new_assessment') }}" class="btn btn-primary">
+                                Start New Assessment
+                            </a>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6 mb-4">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-microchip me-2"></i>Recently Discovered Devices
+                    </h5>
+                    <a href="{{ url_for('devices.list_devices') }}" class="btn btn-sm btn-outline-primary">
+                        View All
+                    </a>
+                </div>
+                <div class="card-body">
+                    {% if recent_devices %}
+                        <div class="list-group list-group-flush">
+                            {% for device in recent_devices %}
+                            <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                <div>
+                                    <div class="fw-bold">
+                                        <span class="device-status {{ 'online' if device.is_active else 'offline' }}"></span>
+                                        {{ device.ip_address }}
+                                    </div>
+                                    <small class="text-muted">
+                                        {{ device.device_type or 'Unknown' }} • 
+                                        {{ device.manufacturer or 'Unknown Manufacturer' }}
+                                    </small>
+                                </div>
+                                <span class="badge risk-{{ device.risk_level }}">
+                                    {{ device.risk_level.title() if device.risk_level else 'Unknown' }}
+                                </span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="text-center text-muted py-4">
+                            <i class="fas fa-microchip fa-3x mb-3"></i>
+                            <p>No devices discovered yet</p>
+                            <button class="btn btn-primary" onclick="startNetworkScan()">
+                                Start Network Scan
+                            </button>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Running Assessments Alert -->
+    {% if stats.assessments.running > 0 %}
+    <div class="row">
+        <div class="col-12">
+            <div class="alert alert-info border-left-info">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-info-circle fa-2x me-3"></i>
+                    <div>
+                        <h5 class="alert-heading mb-1">Assessments in Progress</h5>
+                        <p class="mb-0">
+                            {{ stats.assessments.running }} assessment{{ 's' if stats.assessments.running != 1 else '' }} currently running.
+                            <a href="{{ url_for('assessments.list_assessments', status='running') }}" class="alert-link">
+                                View details
+                            </a>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Network Scan Modal -->
+<div class="modal fade" id="networkScanModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-network-wired me-2"></i>Start Network Scan
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="networkScanForm">
+                    <div class="mb-3">
+                        <label for="networkRange" class="form-label">Network Range (CIDR)</label>
+                        <input type="text" class="form-control" id="networkRange" 
+                               placeholder="192.168.1.0/24" value="192.168.1.0/24" required>
+                        <div class="form-text">Enter the network range to scan in CIDR notation</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="scanType" class="form-label">Scan Type</label>
+                        <select class="form-select" id="scanType">
+                            <option value="ping">Ping Scan (Fast)</option>
+                            <option value="tcp_connect" selected>TCP Connect (Standard)</option>
+                            <option value="tcp_syn">TCP SYN (Advanced)</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="executeNetworkScan()">
+                    <i class="fas fa-play me-1"></i>Start Scan
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    // Initialize charts with data
+    {% if device_distribution %}
+    createDeviceTypeChart({{ device_distribution | tojson }});
+    {% endif %}
+    
+    {% if vulnerability_trends %}
+    createVulnerabilityTrendChart({{ vulnerability_trends | tojson }});
+    {% endif %}
+    
+    // Create risk distribution chart
+    const riskData = {
+        'low': {{ stats.devices.active - stats.devices.high_risk }},
+        'high': {{ stats.devices.high_risk }},
+        'unknown': {{ stats.devices.total - stats.devices.active }}
+    };
+    createRiskDistributionChart(riskData);
+});
+
+function startNetworkScan() {
+    $('#networkScanModal').modal('show');
+}
+
+function executeNetworkScan() {
+    const networkRange = $('#networkRange').val();
+    const scanType = $('#scanType').val();
+    
+    if (!networkRange) {
+        showAlert('Please enter a network range', 'error');
+        return;
+    }
+    
+    // Close modal and show loading
+    $('#networkScanModal').modal('hide');
+    showAlert('Network scan started. This may take a few minutes...', 'info');
+    
+    // In a real implementation, this would call the network scan API
+    $.ajax({
+        url: '/api/network/scan',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        data: JSON.stringify({
+            network_range: networkRange,
+            scan_type: scanType
+        }),
+        success: function(data) {
+            showAlert(`Network scan completed. Found ${data.devices_found || 0} devices.`, 'success');
+            setTimeout(() => location.reload(), 3000);
+        },
+        error: function(xhr) {
+            const error = xhr.responseJSON ? xhr.responseJSON.error : 'Network scan failed';
+            showAlert(error, 'error');
+        }
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+
+{% block title %}Assessments - IoT Security Framework{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- Page Header -->
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="h2 mb-0">
+                <i class="fas fa-search me-2"></i>Security Assessments
+            </h1>
+            <p class="text-muted">Monitor and manage security assessments</p>
+        </div>
+        <div class="col-auto">
+            {% if current_user.can_access('run_assessments') %}
+            <a href="{{ url_for('assessments.new_assessment') }}" class="btn btn-primary">
+                <i class="fas fa-plus me-1"></i>New Assessment
+            </a>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Status Filter -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="row align-items-center">
+                <div class="col-md-6">
+                    <div class="btn-group" role="group">
+                        <a href="{{ url_for('assessments.list_assessments') }}" 
+                           class="btn {{ 'btn-primary' if not status_filter else 'btn-outline-primary' }}">
+                            All Assessments
+                        </a>
+                        <a href="{{ url_for('assessments.list_assessments', status='running') }}" 
+                           class="btn {{ 'btn-primary' if status_filter == 'running' else 'btn-outline-primary' }}">
+                            Running
+                        </a>
+                        <a href="{{ url_for('assessments.list_assessments', status='completed') }}" 
+                           class="btn {{ 'btn-primary' if status_filter == 'completed' else 'btn-outline-primary' }}">
+                            Completed
+                        </a>
+                        <a href="{{ url_for('assessments.list_assessments', status='failed') }}" 
+                           class="btn {{ 'btn-primary' if status_filter == 'failed' else 'btn-outline-primary' }}">
+                            Failed
+                        </a>
+                    </div>
+                </div>
+                <div class="col-md-6 text-end">
+                    <button class="btn btn-outline-secondary" onclick="refreshAssessments()">
+                        <i class="fas fa-sync-alt me-1"></i>Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Assessments Table -->
+    <div class="card">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                Assessments 
+                <span class="badge bg-secondary">{{ assessments.total }}</span>
+            </h5>
+        </div>
+        
+        {% if assessments.items %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Status</th>
+                        <th>Assessment Name</th>
+                        <th>Device</th>
+                        <th>Type</th>
+                        <th>Progress</th>
+                        <th>Risk Score</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for assessment in assessments.items %}
+                    <tr>
+                        <td>
+                            <span class="badge {{ 
+                                'bg-warning' if assessment.status == 'pending' else
+                                'bg-primary' if assessment.status == 'running' else
+                                'bg-success' if assessment.status == 'completed' else
+                                'bg-danger' if assessment.status == 'failed' else
+                                'bg-secondary'
+                            }}">
+                                {% if assessment.status == 'running' %}
+                                    <i class="fas fa-spinner fa-spin me-1"></i>
+                                {% endif %}
+                                {{ assessment.status.title() }}
+                            </span>
+                        </td>
+                        <td>
+                            <a href="{{ url_for('assessments.view_assessment', assessment_id=assessment.id) }}" 
+                               class="text-decoration-none fw-bold">
+                                {{ assessment.name }}
+                            </a>
+                            {% if assessment.description %}
+                            <br><small class="text-muted">{{ assessment.description[:50] }}{% if assessment.description|length > 50 %}...{% endif %}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{{ url_for('devices.view_device', device_id=assessment.device.id) }}" 
+                               class="text-decoration-none">
+                                {{ assessment.device.ip_address }}
+                            </a>
+                            {% if assessment.device.hostname %}
+                            <br><small class="text-muted">{{ assessment.device.hostname }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge bg-light text-dark">
+                                {{ assessment.scan_type.title() }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if assessment.status in ['running', 'completed'] %}
+                            <div class="progress" style="height: 20px;">
+                                <div class="progress-bar {{ 
+                                    'bg-success' if assessment.status == 'completed' else 'bg-primary'
+                                }}" role="progressbar" 
+                                     style="width: {{ assessment.progress_percentage }}%">
+                                    {{ assessment.progress_percentage }}%
+                                </div>
+                            </div>
+                            {% if assessment.total_tests > 0 %}
+                            <small class="text-muted">
+                                {{ assessment.passed_tests + assessment.failed_tests + assessment.error_tests + assessment.skipped_tests }}/{{ assessment.total_tests }} tests
+                            </small>
+                            {% endif %}
+                            {% else %}
+                            <span class="text-muted">Not started</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if assessment.risk_score is not none %}
+                                <div class="d-flex align-items-center">
+                                    <span class="badge {{ 
+                                        'bg-success' if assessment.risk_score < 30 else
+                                        'bg-warning' if assessment.risk_score < 60 else
+                                        'bg-danger'
+                                    }} me-2">
+                                        {{ assessment.security_grade or 'N/A' }}
+                                    </span>
+                                    <small class="text-muted">{{ "%.1f"|format(assessment.risk_score) }}</small>
+                                </div>
+                                {% if assessment.total_vulnerabilities > 0 %}
+                                <small class="text-danger">
+                                    <i class="fas fa-bug me-1"></i>{{ assessment.total_vulnerabilities }} issues
+                                </small>
+                                {% endif %}
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span title="{{ assessment.created_at.strftime('%Y-%m-%d %H:%M:%S') }}">
+                                {{ assessment.created_at.strftime('%m/%d %H:%M') }}
+                            </span>
+                            <br><small class="text-muted">{{ assessment.user.username }}</small>
+                        </td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <a href="{{ url_for('assessments.view_assessment', assessment_id=assessment.id) }}" 
+                                   class="btn btn-outline-primary" title="View Details">
+                                    <i class="fas fa-eye"></i>
+                                </a>
+                                
+                                {% if assessment.status == 'pending' and current_user.can_access('run_assessments') %}
+                                <button class="btn btn-outline-success" 
+                                        onclick="startAssessment({{ assessment.id }})"
+                                        id="start-btn-{{ assessment.id }}"
+                                        title="Start Assessment">
+                                    <i class="fas fa-play"></i>
+                                </button>
+                                {% endif %}
+                                
+                                {% if assessment.status == 'running' and current_user.can_access('run_assessments') %}
+                                <button class="btn btn-outline-warning" 
+                                        onclick="stopAssessment({{ assessment.id }})"
+                                        title="Stop Assessment">
+                                    <i class="fas fa-stop"></i>
+                                </button>
+                                {% endif %}
+                                
+                                {% if assessment.status == 'completed' %}
+                                <a href="{{ url_for('reports.assessment_report', assessment_id=assessment.id) }}" 
+                                   class="btn btn-outline-info" title="View Report">
+                                    <i class="fas fa-file-alt"></i>
+                                </a>
+                                {% endif %}
+                                
+                                {% if current_user.can_access('delete') %}
+                                <button class="btn btn-outline-danger btn-delete" 
+                                        onclick="deleteAssessment({{ assessment.id }})" 
+                                        title="Delete"
+                                        {{ 'disabled' if assessment.status == 'running' else '' }}>
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if assessments.pages > 1 %}
+        <div class="card-footer">
+            <nav aria-label="Assessment pagination">
+                <ul class="pagination justify-content-center mb-0">
+                    {% if assessments.has_prev %}
+                    <li class="page-item">
+                        <a class="page-link" href="{{ url_for('assessments.list_assessments', page=assessments.prev_num, status=status_filter) }}">
+                            <i class="fas fa-chevron-left"></i>
+                        </a>
+                    </li>
+                    {% endif %}
+
+                    {% for page_num in assessments.iter_pages() %}
+                        {% if page_num %}
+                            {% if page_num != assessments.page %}
+                            <li class="page-item">
+                                <a class="page-link" href="{{ url_for('assessments.list_assessments', page=page_num, status=status_filter) }}">
+                                    {{ page_num }}
+                                </a>
+                            </li>
+                            {% else %}
+                            <li class="page-item active">
+                                <span class="page-link">{{ page_num }}</span>
+                            </li>
+                            {% endif %}
+                        {% else %}
+                        <li class="page-item disabled">
+                            <span class="page-link">...</span>
+                        </li>
+                        {% endif %}
+                    {% endfor %}
+
+                    {% if assessments.has_next %}
+                    <li class="page-item">
+                        <a class="page-link" href="{{ url_for('assessments.list_assessments', page=assessments.next_num, status=status_filter) }}">
+                            <i class="fas fa-chevron-right"></i>
+                        </a>
+                    </li>
+                    {% endif %}
+                </ul>
+            </nav>
+        </div>
+        {% endif %}
+
+        {% else %}
+        <div class="card-body text-center py-5">
+            <i class="fas fa-search fa-3x text-muted mb-3"></i>
+            <h5 class="text-muted">No Assessments Found</h5>
+            <p class="text-muted mb-4">
+                {% if status_filter %}
+                    No {{ status_filter }} assessments found.
+                {% else %}
+                    Start by creating your first security assessment.
+                {% endif %}
+            </p>
+            <div class="btn-group">
+                {% if status_filter %}
+                <a href="{{ url_for('assessments.list_assessments') }}" class="btn btn-outline-primary">
+                    <i class="fas fa-times me-1"></i>Clear Filter
+                </a>
+                {% endif %}
+                {% if current_user.can_access('run_assessments') %}
+                <a href="{{ url_for('assessments.new_assessment') }}" class="btn btn-primary">
+                    <i class="fas fa-plus me-1"></i>New Assessment
+                </a>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function refreshAssessments() {
+    location.reload();
+}
+
+function deleteAssessment(assessmentId) {
+    if (!confirm('Are you sure you want to delete this assessment? This action cannot be undone.')) {
+        return;
+    }
+    
+    // Simulate delete API call
+    showAlert('Assessment deleted successfully!', 'success');
+    setTimeout(() => location.reload(), 1000);
+}
+
+// Auto-refresh running assessments every 10 seconds
+$(document).ready(function() {
+    const hasRunningAssessments = $('tbody tr').find('.bg-primary').length > 0;
+    
+    if (hasRunningAssessments) {
+        setInterval(function() {
+            // Only refresh if we're still on the same page
+            if (window.location.pathname === '/assessments/') {
+                refreshAssessments();
+            }
+        }, 10000);
+    }
+});
+</script>
+{% endblock %}

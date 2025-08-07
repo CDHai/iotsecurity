@@ -1,11 +1,16 @@
-from .discovery import NetworkScanner, DeviceClassifier
-from .assessment import VulnerabilityScanner, TestExecutor
-from .reporting import ReportGenerator
+"""
+Core functionality for IoT Security Assessment Framework
+"""
+
+from .network_scanner import NetworkScanner, DeviceFingerprinter, AsyncNetworkScanner
+from .security_engine import SecurityTestEngine, TestExecutor
+from .discovery import DeviceDiscoveryService
 
 __all__ = [
     'NetworkScanner',
-    'DeviceClassifier', 
-    'VulnerabilityScanner',
+    'DeviceFingerprinter', 
+    'AsyncNetworkScanner',
+    'SecurityTestEngine',
     'TestExecutor',
-    'ReportGenerator'
+    'DeviceDiscoveryService'
 ]

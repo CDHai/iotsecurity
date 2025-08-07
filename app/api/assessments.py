@@ -1,251 +1,369 @@
-from flask import jsonify, request, current_app
-from flask_login import login_required, current_user
-from app.api import api_bp
-from app.models import Assessment, Device, TestSuite, TestResult
+"""
+Assessment management API endpoints
+"""
+
+from flask import Blueprint, request, jsonify, current_app
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from sqlalchemy import desc
+
 from app import db
-from datetime import datetime
+from app.models.assessment import Assessment
+from app.models.device import Device
+from app.models.test_suite import TestSuite
+from app.models.user import User
+from app.utils.decorators import (
+    require_api_auth, require_permission, handle_exceptions, 
+    validate_json, rate_limit, log_activity
+)
+from app.utils.validators import validate_assessment_data
 
-@api_bp.route('/assessments', methods=['GET'])
-@login_required
-def get_assessments():
-    """Get list of assessments"""
-    try:
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 20, type=int)
-        status = request.args.get('status')
-        device_id = request.args.get('device_id', type=int)
-        
-        query = Assessment.query
-        
-        if status:
-            query = query.filter(Assessment.status == status)
-        
-        if device_id:
-            query = query.filter(Assessment.device_id == device_id)
-        
-        # Filter by user role
-        if not current_user.is_admin():
-            query = query.filter(Assessment.user_id == current_user.id)
-        
-        query = query.order_by(Assessment.created_at.desc())
-        
-        pagination = query.paginate(
-            page=page,
-            per_page=per_page,
-            error_out=False
-        )
-        
-        assessments = pagination.items
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'assessments': [assessment.get_assessment_info() for assessment in assessments],
-                'pagination': {
-                    'page': page,
-                    'per_page': per_page,
-                    'total': pagination.total,
-                    'pages': pagination.pages,
-                    'has_next': pagination.has_next,
-                    'has_prev': pagination.has_prev
-                }
-            }
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Error getting assessments: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to load assessments'
-        }), 500
+assessments_api_bp = Blueprint('assessments_api', __name__)
 
-@api_bp.route('/assessments/<int:assessment_id>', methods=['GET'])
-@login_required
+@assessments_api_bp.route('/', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def list_assessments():
+    """List all assessments with pagination and filtering."""
+    # Get query parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = min(request.args.get('per_page', 20, type=int), 100)
+    status = request.args.get('status', '')
+    device_id = request.args.get('device_id', type=int)
+    user_id = request.args.get('user_id', type=int)
+    
+    # Build query
+    query = Assessment.query
+    
+    if status:
+        query = query.filter(Assessment.status == status)
+    
+    if device_id:
+        query = query.filter(Assessment.device_id == device_id)
+    
+    if user_id:
+        query = query.filter(Assessment.user_id == user_id)
+    
+    # Paginate results
+    pagination = query.order_by(desc(Assessment.created_at)).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    
+    assessments = [assessment.to_dict() for assessment in pagination.items]
+    
+    return jsonify({
+        'assessments': assessments,
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': pagination.total,
+            'pages': pagination.pages,
+            'has_next': pagination.has_next,
+            'has_prev': pagination.has_prev
+        }
+    }), 200
+
+@assessments_api_bp.route('/<int:assessment_id>', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
 def get_assessment(assessment_id):
-    """Get specific assessment details"""
-    try:
-        assessment = Assessment.query.get_or_404(assessment_id)
-        
-        # Check permissions
-        if not current_user.is_admin() and assessment.user_id != current_user.id:
-            return jsonify({
-                'success': False,
-                'error': 'Access denied'
-            }), 403
-        
-        assessment_info = assessment.get_assessment_info()
-        
-        # Get test results
-        test_results = assessment.test_results.all()
-        assessment_info['test_results'] = [
-            result.get_test_result_info() for result in test_results
-        ]
-        
-        return jsonify({
-            'success': True,
-            'data': assessment_info
-        })
-        
-    except Exception as e:
-        current_app.logger.error(f"Error getting assessment {assessment_id}: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to load assessment details'
-        }), 500
+    """Get assessment details."""
+    assessment = Assessment.query.get(assessment_id)
+    if not assessment:
+        return jsonify({'error': 'Assessment not found'}), 404
+    
+    include_results = request.args.get('include_results', 'false').lower() == 'true'
+    
+    return jsonify({
+        'assessment': assessment.to_dict(include_results=include_results)
+    }), 200
 
-@api_bp.route('/assessments', methods=['POST'])
-@login_required
+@assessments_api_bp.route('/', methods=['POST'])
+@require_api_auth
+@require_permission('run_assessments')
+@validate_json()
+@rate_limit(max_requests=5, window_seconds=60)
+@handle_exceptions()
+@log_activity('create_assessment', 'assessment')
 def create_assessment():
-    """Create new assessment"""
+    """Create a new assessment."""
+    data = request.get_json()
+    current_user_id = get_jwt_identity()
+    
     try:
-        data = request.get_json()
-        device_id = data.get('device_id')
-        test_suite_id = data.get('test_suite_id')
-        name = data.get('name')
-        description = data.get('description')
+        # Validate assessment data
+        validated_data = validate_assessment_data(data)
         
-        if not device_id:
-            return jsonify({
-                'success': False,
-                'error': 'Device ID is required'
-            }), 400
-        
-        # Verify device exists
-        device = Device.query.get(device_id)
+        # Check if device exists
+        device = Device.query.get(validated_data['device_id'])
         if not device:
-            return jsonify({
-                'success': False,
-                'error': 'Device not found'
-            }), 404
+            return jsonify({'error': 'Device not found'}), 404
+        
+        # Check if test suite exists (if specified)
+        if validated_data.get('test_suite_id'):
+            test_suite = TestSuite.query.get(validated_data['test_suite_id'])
+            if not test_suite:
+                return jsonify({'error': 'Test suite not found'}), 404
         
         # Create assessment
         assessment = Assessment(
-            device_id=device_id,
-            user_id=current_user.id,
-            test_suite_id=test_suite_id,
-            name=name,
-            description=description
+            device_id=validated_data['device_id'],
+            user_id=current_user_id,
+            name=validated_data['name'],
+            description=validated_data.get('description'),
+            scan_type=validated_data['scan_type'],
+            test_suite_id=validated_data.get('test_suite_id'),
+            notes=validated_data.get('notes')
         )
+        
+        # Set target protocols and custom tests if provided
+        if validated_data.get('target_protocols'):
+            assessment.target_protocols_list = validated_data['target_protocols']
+        
+        if validated_data.get('custom_tests'):
+            assessment.custom_tests_list = validated_data['custom_tests']
         
         db.session.add(assessment)
         db.session.commit()
         
-        return jsonify({
-            'success': True,
-            'data': assessment.get_assessment_info()
-        })
+        current_app.logger.info(f"Assessment '{assessment.name}' created by user {current_user_id}")
         
+        return jsonify({
+            'message': 'Assessment created successfully',
+            'assessment': assessment.to_dict()
+        }), 201
+        
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
-        current_app.logger.error(f"Error creating assessment: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to create assessment'
-        }), 500
+        db.session.rollback()
+        current_app.logger.error(f"Assessment creation error: {str(e)}")
+        return jsonify({'error': 'Failed to create assessment'}), 500
 
-@api_bp.route('/assessments/<int:assessment_id>/start', methods=['POST'])
-@login_required
+@assessments_api_bp.route('/<int:assessment_id>/start', methods=['POST'])
+@require_api_auth
+@require_permission('run_assessments')
+@handle_exceptions()
+@log_activity('start_assessment', 'assessment')
 def start_assessment(assessment_id):
-    """Start assessment execution"""
+    """Start an assessment."""
+    assessment = Assessment.query.get(assessment_id)
+    if not assessment:
+        return jsonify({'error': 'Assessment not found'}), 404
+    
+    current_user_id = get_jwt_identity()
+    
+    # Check if user owns the assessment or is admin
+    if assessment.user_id != current_user_id:
+        user = User.query.get(current_user_id)
+        if not user or not user.has_role('admin'):
+            return jsonify({'error': 'Access denied'}), 403
+    
+    if assessment.status != 'pending':
+        return jsonify({'error': 'Assessment can only be started from pending status'}), 400
+    
     try:
-        assessment = Assessment.query.get_or_404(assessment_id)
-        
-        # Check permissions
-        if not current_user.is_admin() and assessment.user_id != current_user.id:
-            return jsonify({
-                'success': False,
-                'error': 'Access denied'
-            }), 403
-        
-        if assessment.status != 'pending':
-            return jsonify({
-                'success': False,
-                'error': 'Assessment is not in pending status'
-            }), 400
-        
-        # Start assessment
         assessment.start_assessment()
         
-        # TODO: Start actual assessment execution in background
-        # This would typically use Celery or similar task queue
+        current_app.logger.info(f"Assessment {assessment.id} started by user {current_user_id}")
+        
+        # Here you would typically trigger the actual security testing
+        # For now, we'll just mark it as started
         
         return jsonify({
-            'success': True,
             'message': 'Assessment started successfully',
-            'data': assessment.get_assessment_info()
-        })
+            'assessment': assessment.to_dict()
+        }), 200
         
     except Exception as e:
-        current_app.logger.error(f"Error starting assessment {assessment_id}: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to start assessment'
-        }), 500
+        current_app.logger.error(f"Assessment start error: {str(e)}")
+        return jsonify({'error': 'Failed to start assessment'}), 500
 
-@api_bp.route('/assessments/<int:assessment_id>/cancel', methods=['POST'])
-@login_required
-def cancel_assessment(assessment_id):
-    """Cancel assessment"""
+@assessments_api_bp.route('/<int:assessment_id>/stop', methods=['POST'])
+@require_api_auth
+@require_permission('run_assessments')
+@handle_exceptions()
+@log_activity('stop_assessment', 'assessment')
+def stop_assessment(assessment_id):
+    """Stop a running assessment."""
+    assessment = Assessment.query.get(assessment_id)
+    if not assessment:
+        return jsonify({'error': 'Assessment not found'}), 404
+    
+    current_user_id = get_jwt_identity()
+    
+    # Check if user owns the assessment or is admin
+    if assessment.user_id != current_user_id:
+        user = User.query.get(current_user_id)
+        if not user or not user.has_role('admin'):
+            return jsonify({'error': 'Access denied'}), 403
+    
+    if assessment.status != 'running':
+        return jsonify({'error': 'Assessment is not currently running'}), 400
+    
     try:
-        assessment = Assessment.query.get_or_404(assessment_id)
-        
-        # Check permissions
-        if not current_user.is_admin() and assessment.user_id != current_user.id:
-            return jsonify({
-                'success': False,
-                'error': 'Access denied'
-            }), 403
-        
-        if assessment.status not in ['pending', 'running']:
-            return jsonify({
-                'success': False,
-                'error': 'Assessment cannot be cancelled'
-            }), 400
-        
         assessment.status = 'cancelled'
-        assessment.completed_at = datetime.utcnow()
+        assessment.completed_at = db.func.now()
         db.session.commit()
         
+        current_app.logger.info(f"Assessment {assessment.id} stopped by user {current_user_id}")
+        
         return jsonify({
-            'success': True,
-            'message': 'Assessment cancelled successfully'
-        })
+            'message': 'Assessment stopped successfully',
+            'assessment': assessment.to_dict()
+        }), 200
         
     except Exception as e:
-        current_app.logger.error(f"Error cancelling assessment {assessment_id}: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to cancel assessment'
-        }), 500
+        db.session.rollback()
+        current_app.logger.error(f"Assessment stop error: {str(e)}")
+        return jsonify({'error': 'Failed to stop assessment'}), 500
 
-@api_bp.route('/assessments/<int:assessment_id>', methods=['DELETE'])
-@login_required
+@assessments_api_bp.route('/<int:assessment_id>', methods=['DELETE'])
+@require_api_auth
+@require_permission('delete')
+@handle_exceptions()
+@log_activity('delete_assessment', 'assessment')
 def delete_assessment(assessment_id):
-    """Delete assessment"""
+    """Delete an assessment."""
+    assessment = Assessment.query.get(assessment_id)
+    if not assessment:
+        return jsonify({'error': 'Assessment not found'}), 404
+    
+    current_user_id = get_jwt_identity()
+    
+    # Check if user owns the assessment or is admin
+    if assessment.user_id != current_user_id:
+        user = User.query.get(current_user_id)
+        if not user or not user.has_role('admin'):
+            return jsonify({'error': 'Access denied'}), 403
+    
+    if assessment.status == 'running':
+        return jsonify({'error': 'Cannot delete running assessment'}), 400
+    
     try:
-        assessment = Assessment.query.get_or_404(assessment_id)
-        
-        # Check permissions
-        if not current_user.is_admin() and assessment.user_id != current_user.id:
-            return jsonify({
-                'success': False,
-                'error': 'Access denied'
-            }), 403
-        
-        # Delete test results
-        for test_result in assessment.test_results:
-            db.session.delete(test_result)
-        
+        assessment_name = assessment.name
         db.session.delete(assessment)
         db.session.commit()
         
-        return jsonify({
-            'success': True,
-            'message': 'Assessment deleted successfully'
-        })
+        current_app.logger.info(f"Assessment '{assessment_name}' deleted by user {current_user_id}")
+        
+        return jsonify({'message': 'Assessment deleted successfully'}), 200
         
     except Exception as e:
-        current_app.logger.error(f"Error deleting assessment {assessment_id}: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to delete assessment'
-        }), 500
+        db.session.rollback()
+        current_app.logger.error(f"Assessment deletion error: {str(e)}")
+        return jsonify({'error': 'Failed to delete assessment'}), 500
+
+@assessments_api_bp.route('/<int:assessment_id>/results', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def get_assessment_results(assessment_id):
+    """Get assessment test results."""
+    assessment = Assessment.query.get(assessment_id)
+    if not assessment:
+        return jsonify({'error': 'Assessment not found'}), 404
+    
+    # Get query parameters
+    status_filter = request.args.get('status', '')
+    severity_filter = request.args.get('severity', '')
+    
+    # Build query for test results
+    from app.models.test_result import TestResult
+    query = TestResult.query.filter_by(assessment_id=assessment_id)
+    
+    if status_filter:
+        query = query.filter(TestResult.status == status_filter)
+    
+    if severity_filter:
+        query = query.join(TestResult.security_test).filter(
+            TestResult.security_test.has(severity=severity_filter)
+        )
+    
+    results = query.all()
+    
+    return jsonify({
+        'assessment_id': assessment_id,
+        'results': [result.to_dict(include_details=True) for result in results],
+        'summary': {
+            'total': len(results),
+            'passed': len([r for r in results if r.status == 'pass']),
+            'failed': len([r for r in results if r.status == 'fail']),
+            'errors': len([r for r in results if r.status == 'error']),
+            'skipped': len([r for r in results if r.status == 'skip'])
+        }
+    }), 200
+
+@assessments_api_bp.route('/stats', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def assessment_stats():
+    """Get assessment statistics."""
+    stats = {
+        'total_assessments': Assessment.query.count(),
+        'by_status': {},
+        'by_scan_type': {},
+        'recent_activity': []
+    }
+    
+    # Status distribution
+    status_stats = db.session.query(
+        Assessment.status,
+        db.func.count(Assessment.id)
+    ).group_by(Assessment.status).all()
+    
+    for status, count in status_stats:
+        stats['by_status'][status] = count
+    
+    # Scan type distribution
+    scan_type_stats = db.session.query(
+        Assessment.scan_type,
+        db.func.count(Assessment.id)
+    ).group_by(Assessment.scan_type).all()
+    
+    for scan_type, count in scan_type_stats:
+        stats['by_scan_type'][scan_type] = count
+    
+    # Recent activity (last 7 days)
+    from datetime import datetime, timedelta
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    
+    recent_assessments = Assessment.query.filter(
+        Assessment.created_at >= week_ago
+    ).order_by(desc(Assessment.created_at)).limit(10).all()
+    
+    stats['recent_activity'] = [assessment.to_dict() for assessment in recent_assessments]
+    
+    return jsonify(stats), 200
+
+@assessments_api_bp.route('/running', methods=['GET'])
+@require_api_auth
+@require_permission('read')
+@handle_exceptions()
+def get_running_assessments():
+    """Get currently running assessments."""
+    running_assessments = Assessment.get_running_assessments()
+    
+    return jsonify({
+        'running_assessments': [assessment.to_dict() for assessment in running_assessments],
+        'count': len(running_assessments)
+    }), 200
+
+# Error handlers
+@assessments_api_bp.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors."""
+    return jsonify({'error': 'Resource not found'}), 404
+
+@assessments_api_bp.errorhandler(403)
+def forbidden(error):
+    """Handle 403 errors."""
+    return jsonify({'error': 'Access forbidden'}), 403
+
+@assessments_api_bp.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors."""
+    db.session.rollback()
+    return jsonify({'error': 'Internal server error'}), 500
